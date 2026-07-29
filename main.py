@@ -15,14 +15,19 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 # [모니터링 대상 채널] (채널명: 채널 ID)
 # ---------------------------------------------------------
 TARGET_CHANNELS = {
-    "김어준의 겸손은힘들다 뉴스공장": "UC-p2I93sX1_n7L_40Y4dY1A",
-    "새날": "UCsP3AkyS7LqFp7A9dD_-EBA",
-    "이동형TV": "UCcR__M8p9H22tX_mR9D1O3A",
-    "박시영TV": "UCcK3R1lH7Jk0zN3Jp2X1NfA",
-    "매불쇼(팟빵)": "UCz3M0X2C9P4pG_H0V28j7fQ",
-    "뉴탐사": "UCx_E2L3W4j2l2m2m3E4J4FA",
-    "서울의소리": "UCxN2n3L1W3V4_94I2V1J3A",
-    "델리민주 (공식)": "UC88f1G9b2g0N1K6e9v4W_2A",
+    "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
+    "[팟빵] 최욱의 매불쇼": "UCMYhq9OyGI5UEz_NTAoHY7A",
+    "장윤선의 취재편의점": "UCAVVxLmPDFkSTROPue8ZrRA",
+    "[공식] 새날": "UCu1FzjrHosuKGvgIx8oBi8w",
+    "이동형TV": "UCd4BxCKyMHG2J0X1SerTPaQ",
+    "시사타파TV": "UCzQJmmpZjqzJe96CwlrwlHQ",
+    "열린공감TV": "UC4y2Jx26qCb7CrSt_i5bf1A",
+    "뉴탐사 NewTamsa": "UCpr8CBjls1XYoSd98d6aT1w",
+    "서울의소리 VoiceOfSeoul": "UCUxTPRSns--l5BX2537u7Rw",
+    "고발뉴스TV": "UCX7-K_PSdtAiUDLEMQwrRoQ",
+    "김용민TV": "UCljnbFCt-4doBr7wtEIIbbw",
+    "박시영TV": "UCIMv9bOOGWGIfg6wPcRLItQ",
+    "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
 def get_channel_uploads_playlist_id(youtube, channel_id):
