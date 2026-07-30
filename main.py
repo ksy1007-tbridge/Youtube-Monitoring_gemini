@@ -20,6 +20,7 @@ KST = timezone(timedelta(hours=9))
 TARGET_CHANNELS = {
     "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
     "[팟빵] 최욱의 매불쇼": "UCMYhq9OyGI5UEz_NTAoHY7A",
+    "스픽스": "UCgeOlLcX6PReHdWImEnUVTg",
     "장윤선의 취재편의점": "UCAVVxLmPDFkSTROPue8ZrRA",
     "[공식] 새날": "UCu1FzjrHosuKGvgIx8oBi8w",
     "이동형TV": "UCd4BxCKyMHG2J0X1SerTPaQ",
