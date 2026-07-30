@@ -11,15 +11,17 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    timeout-minutes: 15 # 스크립트 무한 대기 방지 (필요 시 시간 조절)
 
     steps:
     - name: Checkout Repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@v5
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@v6
       with:
         python-version: '3.10'
+        cache: 'pip' # pip 패키지 캐싱 적용으로 빌드 속도 향상
 
     - name: Install Dependencies
       run: |
