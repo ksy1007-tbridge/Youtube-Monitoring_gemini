@@ -128,12 +128,14 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 
             if pub_time_kst >= twenty_four_hours_ago:
                 elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
-                elapsed_hours = max(elapsed_hours, 0.1)
+                elapsed_hours = max(elapsed_hours, 0.01) # 0으로 나누기 방지용
 
                 views = int(stats.get("viewCount", 0))
                 views_per_hour = int(views / elapsed_hours)
 
-                if elapsed_hours < 1.0:
+                if elapsed_hours < (1.0 / 60.0):
+                    elapsed_str = "방금 전"
+                elif elapsed_hours < 1.0:
                     elapsed_str = f"{int(elapsed_hours * 60)}분 전"
                 else:
                     elapsed_str = f"{int(elapsed_hours)}시간 전"
@@ -145,6 +147,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     "프레임": classify_frame(title),
                     "조회수": views,
                     "시간당조회수": views_per_hour,
+                    "경과시간_hours": elapsed_hours,  # 필터링용 경과시간(시간 단위)
                     "경과시간": elapsed_str,
                     "게시일시_dt": pub_time_kst,
                     "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
@@ -205,8 +208,13 @@ def run_monitoring():
     hot_100k_count = len(df[df["조회수"] >= 100000])
     top_video = df.iloc[0]
 
-    # 시당 조회수 1위
-    df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    # 💡 [개선] 시당 조회수는 15분(0.25시간) 이상 경과된 영상 중에서만 산출 (초단기 스파이크 착시 방지)
+    df_min15 = df[df["경과시간_hours"] >= 0.25]
+    if not df_min15.empty:
+        df_vph = df_min15.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    else:
+        df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+
     top_vph = df_vph.iloc[0]
 
     # 프레임 분포
@@ -270,9 +278,9 @@ def run_monitoring():
         if rank > 10:  # 총 10개 채워지면 중단
             break
 
-    # ----- 2. 시당 조회수 기준 TOP 5 (채널당 1개만 노출) -----
+    # ----- 2. 시당 조회수 기준 TOP 5 (15분 이상 경과 & 채널당 1개만 노출) -----
     msg += f"───────────────────\n\n"
-    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (채널별 1개 제한)</b>\n\n"
+    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (15분 이상 경과 / 채널별 1개)</b>\n\n"
 
     channel_counts_vph = {}
     vph_rank = 1
