@@ -37,13 +37,20 @@ TARGET_CHANNELS = {
 }
 
 # ---------------------------------------------------------
-# [이슈/프레임 분류 키워드]
+# [이슈/프레임 분류 키워드 (보강됨)]
 # ---------------------------------------------------------
 FRAME_KEYWORDS = {
-    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보"],
-    "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소"],
-    "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
-    "민생/정책": ["교육", "경제", "민생", "물가", "부동산", "교실"],
+    "전당대회/경선": [
+        "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
+        "토론", "재검표", "부정선거", "윤리위", "당규"
+    ],
+    "당내/인물": [
+        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "홍사훈",
+        "주진우", "이석현", "신인규", "이이제이", "반명"
+    ],
+    "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검"],
+    "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권", "대통령"],
+    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표"],
 }
 
 
@@ -114,7 +121,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
             if 0 < duration_sec <= 60:
                 continue
 
-            # 3. ISO8601 시간 파싱 개선 (ISO 형식 및 밀리초 완벽 대응)
+            # 3. ISO8601 시간 파싱
             pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
             pub_time_utc = datetime.fromisoformat(pub_date_str)
             pub_time_kst = pub_time_utc.astimezone(KST)
@@ -150,7 +157,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 
 
 def send_telegram_message(message):
-    """텔레그램 메시지 발송 및 오류 디버깅 로그 추가"""
+    """텔레그램 메시지 발송"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -210,13 +217,11 @@ def run_monitoring():
             frame_summary_parts.append(f"{frame} {cnt}개")
     frame_summary = ", ".join(frame_summary_parts) if frame_summary_parts else "분류 없음"
 
-    # HTML 이스케이프
     top_channel_safe = html.escape(str(top_video["채널명"]))
     top_vph_channel_safe = html.escape(str(top_vph["채널명"]))
 
     msg = f"📊 <b>여권 성향 유튜브 모니터링</b>\n"
     msg += f"⏱ 기준: KST {now_str} (쇼츠 제외)\n\n"
-
     msg += f"💡 <b>[오늘의 요약]</b>\n"
     msg += f"• 수집 영상: <b>{total_videos}개</b> (채널 {unique_channels}개)\n"
     msg += f"• 🔥 10만+ 대박 영상: <b>{hot_100k_count}개</b>\n"
@@ -225,16 +230,28 @@ def run_monitoring():
     msg += f"• 📌 주요 프레임: {frame_summary}\n\n"
     msg += f"───────────────────\n\n"
 
-    # ----- 조회수 기준 TOP (안전하게 최대 10개) -----
-    msg += f"<b>📈 조회수 TOP</b>\n\n"
+    # ----- 1. 조회수 기준 TOP (채널당 최대 2개만 노출) -----
+    msg += f"<b>📈 조회수 TOP (채널별 상위 2개 제한)</b>\n\n"
+
+    channel_counts_top = {}
     rank = 1
-    for idx, row in df.head(10).iterrows():
+
+    for idx, row in df.iterrows():
+        channel = row["채널명"]
+
+        # 채널 노출 횟수 체크 (2개 초과 시 스킵)
+        current_count = channel_counts_top.get(channel, 0)
+        if current_count >= 2:
+            continue
+
+        channel_counts_top[channel] = current_count + 1
+
         views = row["조회수"]
         views_formatted = f"{views:,}"
         vph_formatted = f"{row['시간당조회수']:,}"
 
         safe_title = html.escape(str(row["제목"]))
-        safe_channel = html.escape(str(row["채널명"]))
+        safe_channel = html.escape(str(channel))
         frame_tag = f"[{row['프레임']}] " if row["프레임"] != "기타" else ""
 
         if views >= 500000:
@@ -248,23 +265,39 @@ def run_monitoring():
         msg += f"   👁 <b>{views_formatted}회</b> (시당 +{vph_formatted}회) {frame_tag}\n"
         msg += f"   🎬 {safe_title}\n"
         msg += f'   👉 <a href="{row["링크"]}">[영상 보기]</a>\n\n'
+
         rank += 1
+        if rank > 10:  # 총 10개 채워지면 중단
+            break
 
-    # ----- 시당 조회수 기준 TOP 5 -----
+    # ----- 2. 시당 조회수 기준 TOP 5 (채널당 1개만 노출) -----
     msg += f"───────────────────\n\n"
-    msg += f"<b>🚀 지금 뜨는 영상 (시당 조회수 TOP 5)</b>\n\n"
+    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (채널별 1개 제한)</b>\n\n"
 
+    channel_counts_vph = {}
     vph_rank = 1
-    for idx, row in df_vph.head(5).iterrows():
+
+    for idx, row in df_vph.iterrows():
+        channel = row["채널명"]
+
+        # 시당 순위는 다양한 채널을 조명하기 위해 채널당 1개로 제한
+        if channel_counts_vph.get(channel, 0) >= 1:
+            continue
+
+        channel_counts_vph[channel] = 1
+
         safe_title = html.escape(str(row["제목"]))
-        safe_channel = html.escape(str(row["채널명"]))
+        safe_channel = html.escape(str(channel))
         frame_tag = f"[{row['프레임']}] " if row["프레임"] != "기타" else ""
 
         msg += f"{vph_rank}. <b>[{safe_channel}]</b> 시당 +{row['시간당조회수']:,}회 ({row['경과시간']})\n"
         msg += f"   👁 현재 {row['조회수']:,}회 {frame_tag}\n"
         msg += f"   🎬 {safe_title}\n"
         msg += f'   👉 <a href="{row["링크"]}">[영상 보기]</a>\n\n'
+
         vph_rank += 1
+        if vph_rank > 5:  # 총 5개 채워지면 중단
+            break
 
     send_telegram_message(msg)
 
