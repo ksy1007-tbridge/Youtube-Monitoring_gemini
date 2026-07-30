@@ -1,6 +1,7 @@
 import os
 import requests
 import re
+import html  # 특수문자 변환용 모듈 추가
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -71,7 +72,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
         if not video_ids:
             return video_list
 
-        # contentDetails(재생시간) 파트 추가 수집
         videos_response = youtube.videos().list(
             part="snippet,statistics,contentDetails,liveStreamingDetails", id=",".join(video_ids)
         ).execute()
@@ -86,7 +86,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
             if live_status == "upcoming":
                 continue
 
-            # 2. 쇼츠 제외 (재생시간 60초 이하 필터링)
+            # 2. 쇼츠 제외 (재생시간 60초 이하)
             duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
             if duration_sec > 0 and duration_sec <= 60:
                 continue
@@ -96,14 +96,12 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
             pub_time_kst = pub_time_utc.astimezone(KST)
 
             if pub_time_kst >= twenty_four_hours_ago:
-                # 4. 경과 시간 및 시간당 조회수 계산
                 elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
-                elapsed_hours = max(elapsed_hours, 0.1) # 0으로 나누기 방지
+                elapsed_hours = max(elapsed_hours, 0.1)
                 
                 views = int(stats.get("viewCount", 0))
                 views_per_hour = int(views / elapsed_hours)
 
-                # 경과시간 텍스트 포맷팅 (예: 30분 전 / 5시간 전)
                 if elapsed_hours < 1.0:
                     elapsed_str = f"{int(elapsed_hours * 60)}분 전"
                 else:
@@ -125,7 +123,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
     return video_list
 
 def send_telegram_message(message):
-    """텔레그램 메시지 발송"""
+    """텔레그램 메시지 발송 및 오류 디버깅 로그 추가"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -134,7 +132,12 @@ def send_telegram_message(message):
         "disable_web_page_preview": True
     }
     response = requests.post(url, data=payload)
-    return response.json()
+    res_json = response.json()
+    if not res_json.get("ok"):
+        print(f"❌ 텔레그램 발송 실패: {res_json}")
+    else:
+        print("✅ 텔레그램 리포트 성공적으로 전송됨!")
+    return res_json
 
 def run_monitoring():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
@@ -149,24 +152,21 @@ def run_monitoring():
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
 
     if not all_data:
-        send_telegram_message(f"⚠️ <b>[여권 성향 유튜브 리포트]</b>\n({now_str} KST)\n\n최근 24시간 이내에 업로드된 일반 영상(쇼츠 제외)이 없습니다.")
+        send_telegram_message(f"⚠️ <b>[여권 성향 유튜브 리포트]</b>\n({now_str} KST)\n\n최근 24시간 이내에 업로드된 일반 영상이 없습니다.")
         return
 
     df = pd.DataFrame(all_data)
 
-    # 채널 중복 방지: 채널당 가장 최신/대표 영상 1개만 추출
     df = df.sort_values(by=["채널명", "게시일시_dt"], ascending=[True, False])
     df = df.drop_duplicates(subset=["채널명"], keep="first")
-
-    # 전체 수집 건 중 조회수 높은 순 정렬
     df = df.sort_values(by="조회수", ascending=False)
 
-    # ---------------------------------------------------------
-    # [헤더 & 3줄 요약 작성]
-    # ---------------------------------------------------------
     total_channels = len(df)
     top_video = df.iloc[0]
     hot_100k_count = len(df[df['조회수'] >= 100000])
+
+    # 채널명 HTML 이스케이프 처리
+    top_channel_safe = html.escape(str(top_video['채널명']))
 
     msg = f"📊 <b>여권 성향 유튜브 모니터링</b>\n"
     msg += f"⏱ 기준: KST {now_str} (쇼츠 제외)\n\n"
@@ -174,19 +174,19 @@ def run_monitoring():
     msg += f"💡 <b>[오늘의 3줄 요약]</b>\n"
     msg += f"• 수집 채널: 총 <b>{total_channels}개</b> 채널 신규 영상\n"
     msg += f"• 🔥 10만+ 대박 영상: <b>{hot_100k_count}개</b>\n"
-    msg += f"• 👑 현재 1위: <b>[{top_video['채널명']}]</b> ({top_video['조회수']:,}회)\n\n"
+    msg += f"• 👑 현재 1위: <b>[{top_channel_safe}]</b> ({top_video['조회수']:,}회)\n\n"
     msg += f"───────────────────\n\n"
 
-    # ---------------------------------------------------------
-    # [개별 영상 목록 작성]
-    # ---------------------------------------------------------
     rank = 1
     for idx, row in df.iterrows():
         views = row['조회수']
         views_formatted = f"{views:,}"
         vph_formatted = f"{row['시간당조회수']:,}"
 
-        # 배지 설정
+        # HTML 특수문자 이스케이프 처리 (오류 원인 방지)
+        safe_title = html.escape(str(row['제목']))
+        safe_channel = html.escape(str(row['채널명']))
+
         if views >= 500000:
             badge = "💥 <b>[TOP]</b> "
         elif views >= 100000:
@@ -194,14 +194,13 @@ def run_monitoring():
         else:
             badge = "🔹 "
 
-        msg += f"{rank}. {badge}<b>[{row['채널명']}]</b> ({row['게시일시']} | {row['경과시간']})\n"
+        msg += f"{rank}. {badge}<b>[{safe_channel}]</b> ({row['게시일시']} | {row['경과시간']})\n"
         msg += f"   👁 조회수: <b>{views_formatted}회</b> (시당 +{vph_formatted}회)\n"
-        msg += f"   🎬 {row['제목']}\n"
+        msg += f"   🎬 {safe_title}\n"
         msg += f"   👉 <a href='{row['링크']}'>[영상 보기]</a>\n\n"
         rank += 1
 
     send_telegram_message(msg)
-    print("✅ 최종 업그레이드된 텔레그램 리포트 발송 완료!")
 
 if __name__ == "__main__":
     run_monitoring()
