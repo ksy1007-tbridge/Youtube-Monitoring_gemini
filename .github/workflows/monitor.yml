@@ -20,7 +20,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v6
       with:
-        python-version: '3.10'
+        python-version: '3.11'
         cache: 'pip' # pip 패키지 캐싱 적용으로 빌드 속도 향상
 
     - name: Install Dependencies
