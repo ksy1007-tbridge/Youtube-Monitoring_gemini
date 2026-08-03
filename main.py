@@ -34,22 +34,22 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
+# 개별 단일 프레임 키워드
 FRAME_KEYWORDS = {
-    "종합방송": [
-        "뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일",
-        "[live]", "뉴스(곽수산", "[full]", "매불쇼 8월", "김용민 브리핑] 아침7시"
-    ],
     "전당대회/경선": [
         "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
-        "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "창원", "전국당원대회"
+        "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "창원", "전국당원대회", "정청래"
     ],
     "당내/인물": [
-        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희"
+        "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희"
     ],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권", "대통령"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시"],
 }
+
+# 종합방송 판정용 전용 키워드 (길이 90분 이상 조건과 병행)
+OMNIBUS_KEYWORDS = ["뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일", "[full]", "매불쇼 8월", "김용민 브리핑] 아침7시"]
 
 
 def parse_iso8601_duration(duration_str):
@@ -62,8 +62,15 @@ def parse_iso8601_duration(duration_str):
     return hours * 3600 + minutes * 60 + seconds
 
 
-def classify_frame(title: str) -> str:
+def classify_frame(title: str, duration_sec: int) -> str:
     title_lower = title.lower()
+
+    # [보정] 영상 길이가 90분(5400초) 이상이면서 종합방송 전용 키워드가 포함된 경우만 종합방송 판정
+    if duration_sec >= 5400:
+        for kw in OMNIBUS_KEYWORDS:
+            if kw.lower() in title_lower:
+                return "종합방송"
+
     for frame, keywords in FRAME_KEYWORDS.items():
         for kw in keywords:
             if kw.lower() in title_lower:
@@ -132,14 +139,14 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 
                 title = snippet["title"]
                 
-                # 정규 라이브 코너 하드코딩 필터링 (12시에 만나요, 뉴잼스 등 추가)
+                # 라이브 감지 (12시에 만나요 포함)
                 live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "뉴스공장 2026", "매불쇼", "브리핑", "뉴잼스", "현장"]
                 is_live_video = any(kw in title.lower() for kw in live_keywords)
 
                 video_list.append({
                     "채널명": channel_name,
                     "제목": title,
-                    "프레임": classify_frame(title),
+                    "프레임": classify_frame(title, duration_sec),
                     "조회수": views,
                     "시간당조회수": views_per_hour,
                     "경과시간_hours": elapsed_hours,
@@ -165,8 +172,8 @@ def generate_ai_insight(df, frame_stat_summary):
         top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 엄밀한 수치에 기반하는 수석 데이터 분석가입니다.
-        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]을 바탕으로 리포트 인사이트를 작성하세요.
+        당신은 수치 간의 명확한 차이와 인사이트를 도출하는 수석 데이터 분석가입니다.
+        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]을 바탕으로 예리하고 날카로운 보고서 인사이트를 작성하세요.
 
         [상위 영상 데이터]
         {top_videos}
@@ -174,23 +181,23 @@ def generate_ai_insight(df, frame_stat_summary):
         [프레임별 현황 (건수비중 | 조회수비중)]
         {frame_stat_summary}
 
-        [핵심 작성 규칙 - 반드시 준수]
-        1. [종합방송 분리 전제 해석]: 종합방송(코너 혼재, 프레임 판정 불가)을 제외하고, 판정 가능한 단일 프레임들(전당대회/경선, 민생/경제 등) 간의 수치 비중을 객관적으로 비교하세요.
-        2. [주관적 원인 추정 절대 금지]: "시청 피로도가 가중되었다", "관심이 저하되었다" 등 데이터에 나오지 않는 원인을 추측해 쓰지 마세요. 단순 수치 현황(예: "전당대회/경선 프레임의 조회수 비중은 11.4%에 그쳤습니다")까지만 담백하게 서술하세요.
-        3. [패널 이름 제외]: 홍사훈, 주진우, 노근창, 이선민 등 방송 단순 패널/출연자 이름은 '주요 언급 키워드'에서 전면 제외하고, 정치인(정청래, 김민석 등) 및 현안 단어만 나열하세요.
-        4. [이모티콘 엄금]: 이모티콘은 절대 사용하지 마세요.
+        [작성 규칙 - 반드시 준수]
+        1. [가장 강력한 대비와 신호를 첫 문장으로 배치]: 종합방송을 제외한 단일 프레임 중 '민생/경제/정책' 프레임(단 1건)의 조회수 비중과 '전당대회/경선' 또는 '당내/인물' 프레임의 건수/조회수 비중을 직접 비교하여, 경선 국면 속 시청자 관심이 경제/증시로 이동하고 있음을 가장 첫 문장으로 강렬하게 지적하세요. (예: "민생/경제 프레임은 단 1건만으로 조회수 X%를 점유하여, N건에 Y%인 전당대회 프레임 대비 개별 효율에서 압도적 차이를 보였습니다. 전당대회가 진행 중임에도 시청자의 실질적 화력은 증시/경제 현안으로 집중되고 있습니다.")
+        2. [단순 나열 및 원인 추측 금지]: 단순히 수치를 나열하거나 "피로도가 가중되었다" 같은 주관적 추측을 피하고, 편당 조회 효율 차이와 구도 변화만 날카롭게 짚으세요.
+        3. [패널 이름 제외]: 홍사훈, 주진우, 노근창, 이선민 등 단순 방송 패널/출연자 이름을 제외하고 정치인(정청래, 김민석 등) 및 핵심 이슈 단어만 포함하세요.
+        4. [이모티콘 사용 금지]: 깔끔한 문체로 작성하세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (종합방송을 제외한 단일 프레임 간의 조회수 비중 현황 및 명확한 특징 2문장)
+        - (건수 대비 조회 효율의 차이와 관심사 이동 현황을 짚는 임팩트 있는 2문장)
 
         2. 주요 언급 키워드
-        - (단순 패널을 제외한 핵심 정치인 및 이슈 키워드)
+        - (단순 패널을 제외한 핵심 정치인 및 이슈 키워드 나열)
 
         3. 모니터링 시사점
-        - (데이터 수치에만 기반한 시사점 1문장)
+        - (데이터 수치에 기반한 전략적 관전 포인트 1문장)
         """
 
         primary_model = 'gemini-3-flash-preview'
@@ -252,21 +259,20 @@ def run_monitoring():
 
     df = pd.DataFrame(all_data)
 
-    # ----- [공통 보정 필터: 누적/시당 모두 라이브 6h, 일반 1h 미만 영상 제외] -----
-    def is_stabilized_video(row):
+    # 누적 TOP용: 전체 영상 대상 (필터링 미적용, 실제 누적 조회수 정렬)
+    df_top = df.sort_values(by="조회수", ascending=False).reset_index(drop=True)
+
+    # 시당 TOP용: 라이브 6시간 / 일반 1시간 보정 필터 적용
+    def is_stabilized_vph(row):
         if row["is_live"]:
             return row["경과시간_hours"] >= 6.0
         return row["경과시간_hours"] >= 1.0
 
-    # 안정화된 영상 기반 서팅 (미달 시 전체 대상)
-    df_stabilized = df[df.apply(is_stabilized_video, axis=1)]
-    if df_stabilized.empty:
-        df_stabilized = df.copy()
-
-    # 누적 TOP용 정렬
-    df_top = df_stabilized.sort_values(by="조회수", ascending=False).reset_index(drop=True)
-    # 시당 TOP용 정렬
-    df_vph = df_stabilized.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    df_vph_candidates = df[df.apply(is_stabilized_vph, axis=1)]
+    if not df_vph_candidates.empty:
+        df_vph = df_vph_candidates.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    else:
+        df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
     total_videos = len(df)
     collected_channels_set = set(df["채널명"].unique())
@@ -328,8 +334,8 @@ def run_monitoring():
     msg += f"{ai_insight_text}\n\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    # ----- 1. 누적 조회수 TOP 10 (안정화 보정 적용) -----
-    msg += f"<b>■ 누적 조회수 TOP 10 (라이브 6h/일반 1h 보정 / 채널별 최대 2개)</b>\n\n"
+    # ----- 1. 누적 조회수 TOP 10 (전체 대상 복원) -----
+    msg += f"<b>■ 누적 조회수 TOP 10 (채널별 최대 2개)</b>\n\n"
 
     channel_counts_top = {}
     rank = 1
@@ -346,8 +352,14 @@ def run_monitoring():
         safe_channel = html.escape(str(channel))
         frame_tag = f"[{row['프레임']}] " if row['프레임'] != "기타" else ""
 
+        # 누적 상위 표시 시, 시간당 수치는 쿨다운 대상일 경우 '(시당 산출 제외)'로 표기
+        if is_stabilized_vph(row):
+            vph_str = f"시간당 +{row['시간당조회수']:,}회"
+        else:
+            vph_str = "시당 산출 제외"
+
         msg += f"<b>{rank}. [{safe_channel}]</b> ({row['게시일시']} | {row['경과시간']})\n"
-        msg += f"   • 조회수: <b>{views:,}회</b> (시간당 +{row['시간당조회수']:,}회) {frame_tag}\n"
+        msg += f"   • 조회수: <b>{views:,}회</b> ({vph_str}) {frame_tag}\n"
         msg += f"   • 제목: {safe_title}\n"
         msg += f'   • 링크: <a href="{row["링크"]}">[영상 보기]</a>\n\n'
 
