@@ -2,10 +2,10 @@ name: YouTube Daily Monitor
 
 on:
   schedule:
-    # UTC 기준 23:00 = 한국 시간(KST) 오전 08:00
-    - cron: '0 23 * * *'
-    # UTC 기준 11:00 = 한국 시간(KST) 오후 08:00
-    - cron: '0 11 * * *'
+  # UTC 기준 00:00 = 한국 시간(KST) 오전 09:00
+  - cron: '0 0 * * *'
+  # UTC 기준 09:00 = 한국 시간(KST) 오후 06:00
+  - cron: '0 9 * * *'
   workflow_dispatch: # GitHub 웹 페이지에서 수동으로 실행 테스트 가능하게 설정
 
 jobs:
