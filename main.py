@@ -34,14 +34,17 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# 키워드 보강 (창원, 합동연설회, 라이브 등 추가)
 FRAME_KEYWORDS = {
+    "종합방송": [
+        "뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일",
+        "[live]", "뉴스(곽수산", "[full]", "매불쇼 8월", "김용민 브리핑] 아침7시"
+    ],
     "전당대회/경선": [
         "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
         "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "창원", "전국당원대회"
     ],
     "당내/인물": [
-        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명"
+        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희"
     ],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권", "대통령"],
@@ -129,8 +132,8 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 
                 title = snippet["title"]
                 
-                # 정규 라이브 코너 및 제목 기반 라이브 감지 강화
-                live_keywords = ["live", "라이브", "12시에 만나요", "뉴스공장 2026", "매불쇼", "브리핑"]
+                # 정규 라이브 코너 하드코딩 필터링 (12시에 만나요, 뉴잼스 등 추가)
+                live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "뉴스공장 2026", "매불쇼", "브리핑", "뉴잼스", "현장"]
                 is_live_video = any(kw in title.lower() for kw in live_keywords)
 
                 video_list.append({
@@ -162,8 +165,8 @@ def generate_ai_insight(df, frame_stat_summary):
         top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 데이터의 미세한 변화와 착시를 잡아내는 최고 수준의 정치/데이터 분석가입니다.
-        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]을 바탕으로 비즈니스 보고서용 인사이트를 작성하세요.
+        당신은 엄밀한 수치에 기반하는 수석 데이터 분석가입니다.
+        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]을 바탕으로 리포트 인사이트를 작성하세요.
 
         [상위 영상 데이터]
         {top_videos}
@@ -171,25 +174,25 @@ def generate_ai_insight(df, frame_stat_summary):
         [프레임별 현황 (건수비중 | 조회수비중)]
         {frame_stat_summary}
 
-        [핵심 분석 및 작성 규칙 - 반드시 준수]
-        1. [프레임 간 영향력 격차 분석]: 전당대회/경선 프레임의 조회수 비중과 민생/경제/정책 프레임의 조회수 비중을 직접 수치로 비교하세요. (예: "전당대회 프레임은 건수에 비해 조회 비중이 2.7%로 저조한 반면, 민생/경제는 단 1건으로 9.7%를 기록하며 압도적 관심 차이를 보임")
-        2. [패널 이름 제외]: 홍사훈, 주진우, 노근창, 이선민 등 단순 방송 패널/출연자 이름은 '주요 언급 키워드'에서 전면 제외하고, 핵심 정치인(정청래, 김민석 등) 및 주요 이슈 단어만 포함하세요.
-        3. [이모티콘 사용 엄금 & 팩트 준수]: 외부 추측이나 왜곡 없이 엄격한 문체로 작성하세요.
+        [핵심 작성 규칙 - 반드시 준수]
+        1. [종합방송 분리 전제 해석]: 종합방송(코너 혼재, 프레임 판정 불가)을 제외하고, 판정 가능한 단일 프레임들(전당대회/경선, 민생/경제 등) 간의 수치 비중을 객관적으로 비교하세요.
+        2. [주관적 원인 추정 절대 금지]: "시청 피로도가 가중되었다", "관심이 저하되었다" 등 데이터에 나오지 않는 원인을 추측해 쓰지 마세요. 단순 수치 현황(예: "전당대회/경선 프레임의 조회수 비중은 11.4%에 그쳤습니다")까지만 담백하게 서술하세요.
+        3. [패널 이름 제외]: 홍사훈, 주진우, 노근창, 이선민 등 방송 단순 패널/출연자 이름은 '주요 언급 키워드'에서 전면 제외하고, 정치인(정청래, 김민석 등) 및 현안 단어만 나열하세요.
+        4. [이모티콘 엄금]: 이모티콘은 절대 사용하지 마세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (건수 대비 조회수 비중의 격차 및 관심도 이동 현황을 2문장으로 요약)
+        - (종합방송을 제외한 단일 프레임 간의 조회수 비중 현황 및 명확한 특징 2문장)
 
         2. 주요 언급 키워드
-        - (단순 패널/출연자를 제외한 핵심 정치인 및 주요 이슈 키워드 나열)
+        - (단순 패널을 제외한 핵심 정치인 및 이슈 키워드)
 
         3. 모니터링 시사점
-        - (전대 국면 대비 실제 시청자 관심사 향방에 대한 데이터 기반 제언 1문장)
+        - (데이터 수치에만 기반한 시사점 1문장)
         """
 
-        # primary 모델 시도, 실패 시 fallback 모델로 재시도
         primary_model = 'gemini-3-flash-preview'
         fallback_model = 'gemini-2.0-flash'
 
@@ -200,7 +203,7 @@ def generate_ai_insight(df, frame_stat_summary):
             )
             return response.text
         except Exception as primary_e:
-            print(f"⚠️ {primary_model} 호출 실패({primary_e}), {fallback_model} 모델로 재시도합니다.")
+            print(f"⚠️ {primary_model} 실패 ({primary_e}), {fallback_model}로 재시도")
             response = client.models.generate_content(
                 model=fallback_model,
                 contents=prompt,
@@ -248,7 +251,22 @@ def run_monitoring():
         return
 
     df = pd.DataFrame(all_data)
-    df = df.sort_values(by="조회수", ascending=False).reset_index(drop=True)
+
+    # ----- [공통 보정 필터: 누적/시당 모두 라이브 6h, 일반 1h 미만 영상 제외] -----
+    def is_stabilized_video(row):
+        if row["is_live"]:
+            return row["경과시간_hours"] >= 6.0
+        return row["경과시간_hours"] >= 1.0
+
+    # 안정화된 영상 기반 서팅 (미달 시 전체 대상)
+    df_stabilized = df[df.apply(is_stabilized_video, axis=1)]
+    if df_stabilized.empty:
+        df_stabilized = df.copy()
+
+    # 누적 TOP용 정렬
+    df_top = df_stabilized.sort_values(by="조회수", ascending=False).reset_index(drop=True)
+    # 시당 TOP용 정렬
+    df_vph = df_stabilized.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
     total_videos = len(df)
     collected_channels_set = set(df["채널명"].unique())
@@ -257,21 +275,8 @@ def run_monitoring():
     
     collected_count = len(collected_channels_set)
     missing_count = len(missing_channels)
-    
     missing_str = ", ".join(missing_channels) if missing_channels else "없음"
     hot_100k_count = len(df[df["조회수"] >= 100000])
-
-    # ----- [라이브 시당 착시 방지 보정 필터] -----
-    def filter_vph_candidate(row):
-        if row["is_live"]:
-            return row["경과시간_hours"] >= 6.0
-        return row["경과시간_hours"] >= 1.0
-
-    df_vph_candidates = df[df.apply(filter_vph_candidate, axis=1)]
-    if not df_vph_candidates.empty:
-        df_vph = df_vph_candidates.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
-    else:
-        df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
     # ----- [프레임별 건수 및 조회수 비중 집계] -----
     total_views = df["조회수"].sum()
@@ -292,13 +297,19 @@ def run_monitoring():
         cnt = int(row["건수"])
         cnt_ratio = row["건수비중"]
         view_ratio = row["조회비중"]
-        frame_summary_lines.append(f"• {f_name} : <b>{cnt}개</b> ({cnt_ratio}%) | <b>{view_ratio}%</b>")
-        frame_stat_summary_for_ai.append(f"- {f_name}: {cnt}개({cnt_ratio}%) | 조회비중 {view_ratio}%")
+
+        if f_name == "종합방송":
+            note = " (코너 혼재, 프레임 판정 불가)"
+        else:
+            note = ""
+
+        frame_summary_lines.append(f"• {f_name} : <b>{cnt}개</b> ({cnt_ratio}%) | <b>{view_ratio}%</b>{note}")
+        frame_stat_summary_for_ai.append(f"- {f_name}: {cnt}개({cnt_ratio}%) | 조회비중 {view_ratio}%{note}")
 
     frame_summary_text = "\n".join(frame_summary_lines)
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
 
-    ai_insight_text = generate_ai_insight(df, frame_stat_summary_str)
+    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str)
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
@@ -317,13 +328,13 @@ def run_monitoring():
     msg += f"{ai_insight_text}\n\n"
     msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
 
-    # ----- 1. 누적 조회수 TOP 10 -----
-    msg += f"<b>■ 누적 조회수 TOP 10 (채널별 최대 2개)</b>\n\n"
+    # ----- 1. 누적 조회수 TOP 10 (안정화 보정 적용) -----
+    msg += f"<b>■ 누적 조회수 TOP 10 (라이브 6h/일반 1h 보정 / 채널별 최대 2개)</b>\n\n"
 
     channel_counts_top = {}
     rank = 1
 
-    for idx, row in df.iterrows():
+    for idx, row in df_top.iterrows():
         channel = row["채널명"]
         if channel_counts_top.get(channel, 0) >= 2:
             continue
@@ -346,7 +357,7 @@ def run_monitoring():
 
     # ----- 2. 시간당 조회수 TOP 5 -----
     msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-    msg += f"<b>■ 시간당 상승세 TOP 5 (라이브 6h/일반 1h 보정)</b>\n\n"
+    msg += f"<b>■ 시간당 상승세 TOP 5 (라이브 6h/일반 1h 보정 / 채널별 1개)</b>\n\n"
 
     channel_counts_vph = {}
     vph_rank = 1
