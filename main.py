@@ -128,6 +128,8 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     elapsed_str = f"{int(elapsed_hours)}시간 전"
 
                 title = snippet["title"]
+                is_live_video = any(kw in title.lower() for kw in ["live", "라이브"])
+
                 video_list.append({
                     "채널명": channel_name,
                     "제목": title,
@@ -138,7 +140,8 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     "경과시간": elapsed_str,
                     "게시일시_dt": pub_time_kst,
                     "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
-                    "링크": f"https://youtu.be/{item['id']}"
+                    "링크": f"https://youtu.be/{item['id']}",
+                    "is_live": is_live_video
                 })
     except Exception as e:
         print(f"영상 수집 오류 ({channel_name}): {e}")
@@ -146,10 +149,8 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
     return video_list
 
 
-def generate_ai_insight(df):
-    """Gemini AI를 활용해 수집된 영상 기반 심층 분석 및 인사이트 생성"""
+def generate_ai_insight(df, frame_stat_summary):
     if not GEMINI_API_KEY:
-        print("❌ [DEBUG] GEMINI_API_KEY 환경변수를 읽어오지 못했습니다.")
         return "⚠️ GEMINI_API_KEY가 설정되지 않아 AI 심층 분석을 스킵합니다."
 
     try:
@@ -158,22 +159,26 @@ def generate_ai_insight(df):
         top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 수집된 유튜브 데이터를 엄밀하게 분석하는 수석 데이터 분석가입니다.
-        아래 입력된 상위 영상 데이터만 '엄격히' 바탕으로 인사이트를 작성하세요.
+        당신은 수집된 유튜브 모니터링 데이터를 엄밀히 분석하는 수석 데이터 분석가입니다.
+        아래 제공된 [상위 영상 데이터]와 [프레임별 건수 및 조회수 비중]만을 바탕으로 인사이트를 작성하세요.
 
-        [분석 대상 데이터]
+        [상위 영상 데이터]
         {top_videos}
 
-        [원천 금지 및 작성 규칙 - 반드시 준수]
-        1. [외부 정보 입력 엄금]: 영상 제목에 등장하지 않은 외부 정치 현안, 언론 보도 내용, 추측성 단어(예: 의리/거짓말 논란, 컨트롤타워 부재 등)를 절대로 지어내거나 덧붙이지 마세요.
-        2. [팩트 왜곡 금지]: 경제/금융 관련 단어(예: '코스닥 매수 사이드카', '엇갈린 증시')는 영상 제목에 있는 표현 그대로 사용하고, 함부로 '폭락'이나 '위기'로 뭉뚱그려 과장하지 마세요.
-        3. [통계 기반 해석]: 건수(수량)와 시간당 조회수(지표 착시 가능성)의 특성을 구분하여 데이터에 나온 현황만 담백하게 언급하세요.
+        [프레임별 현황 (건수 및 조회수 비중)]
+        {frame_stat_summary}
+
+        [엄격한 분석 및 작성 규칙]
+        1. [건수 vs 조회수 대비 강조]: 영상 업로드 건수가 적더라도 조회수 비중이나 시당 순위가 높다면 "단 X건임에도 조회수 비중 Y%를 차지" 또는 "건수는 적으나 상위권 독점"과 같이 수량과 영향력의 차이를 반드시 대비시켜 설명하세요.
+        2. [텍스트 팩트 엄수]: 채널명(예: 호남뉴탐사)에 포함된 지명이나 단어를 정치 현안 키워드로 왜곡하지 마세요. 오직 '영상 제목'에 직접 적힌 단어만 인용하세요.
+        3. [지어내기 엄금]: 제목에 없는 경선 결과, 승리 여부, 외부 정치 뉴스, 의리/거짓말 논란 등을 절대 추측하여 쓰지 마세요.
+        4. [제목 원문 반영]: 경제 관련 수치는 제목 표기('코스피 하락, 코스닥 매수 사이드카… 엇갈린 증시') 그대로 반영하고 '폭락'으로 뭉뚱그리지 마세요.
 
         [출력 양식]
         <b>🧠 AI 심층 분석 인사이트</b>
-        • <b>💡 핵심 기류</b>: (데이터 제목에 직접 언급된 이슈 현황 요약 2문장)
-        • <b>⚠️ 주요 언급 키워드</b>: (제목에 실제로 등장한 인물 및 주요 단어만 나열)
-        • <b>🎯 모니터링 시사점</b>: (데이터 현황에 기반한 객관적 관전 포인트 1문장)
+        • <b>💡 핵심 기류</b>: (건수 대비 조회수 집중도를 반영하여 영상 제목 현황 요약 2문장)
+        • <b>⚠️ 주요 언급 키워드</b>: (제목에 등장한 주요 인물 및 명확한 단어만 나열)
+        • <b>🎯 모니터링 시사점</b>: (데이터 현황에 기반한 시사점 1문장)
         """
 
         response = client.models.generate_content(
@@ -182,7 +187,6 @@ def generate_ai_insight(df):
         )
         return response.text
     except Exception as e:
-        print(f"❌ Gemini API 호출 상세 오류: {e}")
         return f"⚠️ AI 심층 분석 생성 중 오류가 발생했습니다: {e}"
 
 
@@ -196,12 +200,7 @@ def send_telegram_message(message):
     }
     try:
         response = requests.post(url, data=payload, timeout=10)
-        res_json = response.json()
-        if not res_json.get("ok"):
-            print(f"❌ 텔레그램 발송 실패: {res_json}")
-        else:
-            print("✅ 텔레그램 리포트 성공적으로 전송됨!")
-        return res_json
+        return response.json()
     except Exception as e:
         print(f"❌ 텔레그램 통신 에러: {e}")
         return None
@@ -218,6 +217,7 @@ def run_monitoring():
             all_data.extend(videos)
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
+    total_target_channels = len(TARGET_CHANNELS)
 
     if not all_data:
         send_telegram_message(
@@ -230,45 +230,70 @@ def run_monitoring():
     df = df.sort_values(by="조회수", ascending=False).reset_index(drop=True)
 
     total_videos = len(df)
-    unique_channels = df["채널명"].nunique()
+    collected_channels = df["채널명"].nunique()
+    zero_channels = total_target_channels - collected_channels
     hot_100k_count = len(df[df["조회수"] >= 100000])
     top_video = df.iloc[0]
 
-    # [보정] 라이브/갓 업로드된 영상의 시간당 조회수 뻥튀기 착시를 막기 위해 최소 1시간(1.0시간) 이상 경과된 영상만 시당 TOP 후보로 선정
-    df_min60 = df[df["경과시간_hours"] >= 1.0]
-    if not df_min60.empty:
-        df_vph = df_min60.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    # ----- [라이브 시당 착시 방지 보정 필터] -----
+    # 일반 영상: 1시간 이상 경과 / 라이브 영상: 6시간 이상 경과
+    def filter_vph_candidate(row):
+        if row["is_live"]:
+            return row["경과시간_hours"] >= 6.0
+        return row["경과시간_hours"] >= 1.0
+
+    df_vph_candidates = df[df.apply(filter_vph_candidate, axis=1)]
+    if not df_vph_candidates.empty:
+        df_vph = df_vph_candidates.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
     else:
         df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
     top_vph = df_vph.iloc[0]
 
-    frame_counts = df["프레임"].value_counts().to_dict()
-    frame_summary_parts = []
-    for frame, cnt in sorted(frame_counts.items(), key=lambda x: -x[1]):
-        if frame != "기타" or cnt >= 2:
-            frame_summary_parts.append(f"{frame} {cnt}개")
-    frame_summary = ", ".join(frame_summary_parts) if frame_summary_parts else "분류 없음"
+    # ----- [프레임별 건수 및 조회수 비중 집계] -----
+    total_views = df["조회수"].sum()
+    frame_group = df.groupby("프레임").agg(
+        건수=("조회수", "count"),
+        총조회수=("조회수", "sum")
+    ).reset_index()
+
+    frame_group["조회비중"] = (frame_group["총조회수"] / total_views * 100).round(1)
+    frame_group = frame_group.sort_values(by="총조회수", ascending=False)
+
+    frame_summary_lines = []
+    frame_stat_summary_for_ai = []
+
+    for _, row in frame_group.iterrows():
+        f_name = row["프레임"]
+        cnt = int(row["건수"])
+        ratio = row["조회비중"]
+        frame_summary_lines.append(f"• {f_name}: <b>{cnt}개</b> | <b>{ratio}%</b>")
+        frame_stat_summary_for_ai.append(f"- {f_name}: {cnt}개 ({ratio}%)")
+
+    frame_summary_text = "\n".join(frame_summary_lines)
+    frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
 
     top_channel_safe = html.escape(str(top_video["채널명"]))
     top_vph_channel_safe = html.escape(str(top_vph["채널명"]))
 
-    ai_insight_text = generate_ai_insight(df)
+    ai_insight_text = generate_ai_insight(df, frame_stat_summary_str)
 
     msg = f"📊 <b>여권 성향 유튜브 모니터링</b>\n"
     msg += f"⏱ 기준: KST {now_str} (쇼츠 제외)\n\n"
     msg += f"💡 <b>[오늘의 요약]</b>\n"
-    msg += f"• 수집 영상: <b>{total_videos}개</b> (채널 {unique_channels}개)\n"
-    msg += f"• 🔥 10만+ 대박 영상: <b>{hot_100k_count}개</b>\n"
-    msg += f"• 👑 조회수 1위: <b>[{top_channel_safe}]</b> ({top_video['조회수']:,}회)\n"
-    msg += f"• 🚀 시당 1위: <b>[{top_vph_channel_safe}]</b> (시당 +{top_vph['시간당조회수']:,}회)\n"
-    msg += f"• 📌 주요 프레임: {frame_summary}\n\n"
+    msg += f"• 모니터링 채널: <b>총 {total_target_channels}개</b> (수집: {collected_channels}개, 미수집: {zero_channels}개)\n"
+    msg += f"• 수집 영상: <b>{total_videos}개</b> | 🔥 10만+ 대박: <b>{hot_100k_count}개</b>\n"
+    msg += f"• 👑 누적 조회수 1위: <b>[{top_channel_safe}]</b> ({top_video['조회수']:,}회)\n"
+    msg += f"• 🚀 시당 1위 (보정): <b>[{top_vph_channel_safe}]</b> (시당 +{top_vph['시간당조회수']:,}회)\n\n"
+
+    msg += f"📌 <b>프레임 집계 (건수 | 조회수 비중)</b>\n"
+    msg += f"{frame_summary_text}\n\n"
 
     msg += f"───────────────────\n\n"
     msg += f"{ai_insight_text}\n\n"
     msg += f"───────────────────\n\n"
 
-    # ----- 1. 조회수 기준 TOP -----
+    # ----- 1. 조회수 TOP -----
     msg += f"<b>📈 조회수 TOP (채널별 상위 2개 제한)</b>\n\n"
 
     channel_counts_top = {}
@@ -276,29 +301,20 @@ def run_monitoring():
 
     for idx, row in df.iterrows():
         channel = row["채널명"]
-        current_count = channel_counts_top.get(channel, 0)
-        if current_count >= 2:
+        if channel_counts_top.get(channel, 0) >= 2:
             continue
 
-        channel_counts_top[channel] = current_count + 1
+        channel_counts_top[channel] = channel_counts_top.get(channel, 0) + 1
 
         views = row["조회수"]
-        views_formatted = f"{views:,}"
-        vph_formatted = f"{row['시간당조회수']:,}"
-
         safe_title = html.escape(str(row["제목"]))
         safe_channel = html.escape(str(channel))
         frame_tag = f"[{row['프레임']}] " if row["프레임"] != "기타" else ""
 
-        if views >= 500000:
-            badge = "💥 "
-        elif views >= 100000:
-            badge = "🔥 "
-        else:
-            badge = "🔹 "
+        badge = "💥 " if views >= 500000 else ("🔥 " if views >= 100000 else "🔹 ")
 
         msg += f"{rank}. {badge}<b>[{safe_channel}]</b> ({row['게시일시']} | {row['경과시간']})\n"
-        msg += f"   👁 <b>{views_formatted}회</b> (시당 +{vph_formatted}회) {frame_tag}\n"
+        msg += f"   👁 <b>{views:,}회</b> (시당 +{row['시간당조회수']:,}회) {frame_tag}\n"
         msg += f"   🎬 {safe_title}\n"
         msg += f'   👉 <a href="{row["링크"]}">[영상 보기]</a>\n\n'
 
@@ -306,9 +322,9 @@ def run_monitoring():
         if rank > 10:
             break
 
-    # ----- 2. 시당 조회수 기준 TOP 5 -----
+    # ----- 2. 시당 조회수 TOP 5 -----
     msg += f"───────────────────\n\n"
-    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (1시간 이상 경과 / 채널별 1개)</b>\n\n"
+    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (라이브 6h/일반 1h 보정 / 채널별 1개)</b>\n\n"
 
     channel_counts_vph = {}
     vph_rank = 1
