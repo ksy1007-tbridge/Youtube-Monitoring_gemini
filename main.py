@@ -234,9 +234,10 @@ def run_monitoring():
     hot_100k_count = len(df[df["조회수"] >= 100000])
     top_video = df.iloc[0]
 
-    df_min15 = df[df["경과시간_hours"] >= 0.25]
-    if not df_min15.empty:
-        df_vph = df_min15.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
+    # [보정] 라이브/갓 업로드된 영상의 시간당 조회수 뻥튀기 착시를 막기 위해 최소 1시간(1.0시간) 이상 경과된 영상만 시당 TOP 후보로 선정
+    df_min60 = df[df["경과시간_hours"] >= 1.0]
+    if not df_min60.empty:
+        df_vph = df_min60.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
     else:
         df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
@@ -307,7 +308,7 @@ def run_monitoring():
 
     # ----- 2. 시당 조회수 기준 TOP 5 -----
     msg += f"───────────────────\n\n"
-    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (15분 이상 경과 / 채널별 1개)</b>\n\n"
+    msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (1시간 이상 경과 / 채널별 1개)</b>\n\n"
 
     channel_counts_vph = {}
     vph_rank = 1
