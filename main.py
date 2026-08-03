@@ -189,11 +189,24 @@ def generate_ai_insight(df, frame_stat_summary):
         - (전대 국면 대비 실제 시청자 관심사 향방에 대한 데이터 기반 제언 1문장)
         """
 
-        response = client.models.generate_content(
-            model='gemini-3-flash-preview',
-            contents=prompt,
-        )
-        return response.text
+        # primary 모델 시도, 실패 시 fallback 모델로 재시도
+        primary_model = 'gemini-3-flash-preview'
+        fallback_model = 'gemini-2.0-flash'
+
+        try:
+            response = client.models.generate_content(
+                model=primary_model,
+                contents=prompt,
+            )
+            return response.text
+        except Exception as primary_e:
+            print(f"⚠️ {primary_model} 호출 실패({primary_e}), {fallback_model} 모델로 재시도합니다.")
+            response = client.models.generate_content(
+                model=fallback_model,
+                contents=prompt,
+            )
+            return response.text
+
     except Exception as e:
         return f"[AI 심층 분석 생성 오류: {e}]"
 
