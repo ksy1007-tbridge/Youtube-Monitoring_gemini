@@ -149,25 +149,25 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 def generate_ai_insight(df):
     """Gemini AI를 활용해 수집된 영상 기반 심층 분석 및 인사이트 생성"""
     if not GEMINI_API_KEY:
+        print("❌ [DEBUG] GEMINI_API_KEY 환경변수를 읽어오지 못했습니다.")
         return "⚠️ GEMINI_API_KEY가 설정되지 않아 AI 심층 분석을 스킵합니다."
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # 상위 영상 10개의 데이터 요약
         top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        아래는 오늘 주요 여권 성향 정치 유튜브 채널들의 상위 영상 데이터입니다:
+        아래는 주요 여권 성향 정치 유튜브 채널들의 상위 영상 데이터입니다:
         {top_videos}
 
         이 데이터를 분석하여 텔레그램 리포트에 포함할 심층 인사이트를 작성해 주세요.
-        다음 양식(HTML 태그 사용)에 맞추어 짧고 명확하게 작성해 주세요:
+        반드시 다음 HTML 양식 구조 그대로 작성해 주세요:
 
         <b>🧠 AI 심층 분석 인사이트</b>
-        • <b>💡 핵심 기류</b>: (오늘 유튜브 생태계를 관통하는 주요 흐름 2문장 요약)
-        • <b>⚠️ 리스크/논쟁 키워드</b>: (특정 인물 의혹이나 정쟁 유발 키워드 언급)
-        • <b>🎯 대응 시사점</b>: (캠프/기획자 입장에서의 1줄 전략 제언)
+        • <b>💡 핵심 기류</b>: (주요 이슈 요약 2문장)
+        • <b>⚠️ 리스크/논쟁 키워드</b>: (주요 인물, 논쟁 키워드)
+        • <b>🎯 대응 시사점</b>: (전략적 제언 1문장)
         """
 
         response = client.models.generate_content(
@@ -176,8 +176,8 @@ def generate_ai_insight(df):
         )
         return response.text
     except Exception as e:
-        print(f"Gemini API 호출 오류: {e}")
-        return "⚠️ AI 심층 분석 생성 중 오류가 발생했습니다."
+        print(f"❌ Gemini API 호출 상세 오류: {e}")
+        return f"⚠️ AI 심층 분석 생성 중 오류가 발생했습니다: {e}"
 
 
 def send_telegram_message(message):
@@ -246,7 +246,6 @@ def run_monitoring():
     top_channel_safe = html.escape(str(top_video["채널명"]))
     top_vph_channel_safe = html.escape(str(top_vph["채널명"]))
 
-    # AI 심층 인사이트 생성
     ai_insight_text = generate_ai_insight(df)
 
     msg = f"📊 <b>여권 성향 유튜브 모니터링</b>\n"
@@ -258,7 +257,6 @@ def run_monitoring():
     msg += f"• 🚀 시당 1위: <b>[{top_vph_channel_safe}]</b> (시당 +{top_vph['시간당조회수']:,}회)\n"
     msg += f"• 📌 주요 프레임: {frame_summary}\n\n"
 
-    # AI 심층 인사이트 섹션 추가
     msg += f"───────────────────\n\n"
     msg += f"{ai_insight_text}\n\n"
     msg += f"───────────────────\n\n"
