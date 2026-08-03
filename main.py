@@ -1,10 +1,11 @@
 import os
 import requests
 import re
-import html  # 특수문자 변환용 모듈
+import html
 from googleapiclient.discovery import build
 from datetime import datetime, timedelta, timezone
 import pandas as pd
+from google import genai
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -12,13 +13,10 @@ import pandas as pd
 YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# KST (한국 표준시) 시간대 설정 (UTC+9)
 KST = timezone(timedelta(hours=9))
 
-# ---------------------------------------------------------
-# [모니터링 대상 채널 목록]
-# ---------------------------------------------------------
 TARGET_CHANNELS = {
     "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
     "[팟빵] 최욱의 매불쇼": "UCMYhq9OyGI5UEz_NTAoHY7A",
@@ -36,9 +34,6 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# ---------------------------------------------------------
-# [이슈/프레임 분류 키워드 (보강됨)]
-# ---------------------------------------------------------
 FRAME_KEYWORDS = {
     "전당대회/경선": [
         "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
@@ -55,7 +50,6 @@ FRAME_KEYWORDS = {
 
 
 def parse_iso8601_duration(duration_str):
-    """ISO 8601 영상 재생시간(PT1M30S 등)을 초(second) 단위로 변환"""
     match = re.match(r'PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?', duration_str)
     if not match:
         return 0
@@ -66,7 +60,6 @@ def parse_iso8601_duration(duration_str):
 
 
 def classify_frame(title: str) -> str:
-    """제목 키워드 기반으로 프레임 분류"""
     title_lower = title.lower()
     for frame, keywords in FRAME_KEYWORDS.items():
         for kw in keywords:
@@ -76,7 +69,6 @@ def classify_frame(title: str) -> str:
 
 
 def get_channel_uploads_playlist_id(youtube, channel_id):
-    """채널의 업로드 전용 재생목록 ID 조회"""
     try:
         response = youtube.channels().list(part="contentDetails", id=channel_id).execute()
         items = response.get("items", [])
@@ -88,7 +80,6 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
 
 
 def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
-    """최근 24시간 이내, 라이브 대기방 및 쇼츠 제외 영상 수집"""
     video_list = []
     now_kst = datetime.now(KST)
     twenty_four_hours_ago = now_kst - timedelta(hours=24)
@@ -111,24 +102,20 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
             stats = item.get("statistics", {})
             content_details = item.get("contentDetails", {})
 
-            # 1. 라이브 대기방(upcoming) 필터링
-            live_status = snippet.get("liveBroadcastContent", "none")
-            if live_status == "upcoming":
+            if snippet.get("liveBroadcastContent", "none") == "upcoming":
                 continue
 
-            # 2. 쇼츠 제외 (60초 이하)
             duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
             if 0 < duration_sec <= 60:
                 continue
 
-            # 3. ISO8601 시간 파싱
             pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
             pub_time_utc = datetime.fromisoformat(pub_date_str)
             pub_time_kst = pub_time_utc.astimezone(KST)
 
             if pub_time_kst >= twenty_four_hours_ago:
                 elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
-                elapsed_hours = max(elapsed_hours, 0.01) # 0으로 나누기 방지용
+                elapsed_hours = max(elapsed_hours, 0.01)
 
                 views = int(stats.get("viewCount", 0))
                 views_per_hour = int(views / elapsed_hours)
@@ -147,7 +134,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     "프레임": classify_frame(title),
                     "조회수": views,
                     "시간당조회수": views_per_hour,
-                    "경과시간_hours": elapsed_hours,  # 필터링용 경과시간(시간 단위)
+                    "경과시간_hours": elapsed_hours,
                     "경과시간": elapsed_str,
                     "게시일시_dt": pub_time_kst,
                     "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
@@ -159,8 +146,41 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
     return video_list
 
 
+def generate_ai_insight(df):
+    """Gemini AI를 활용해 수집된 영상 기반 심층 분석 및 인사이트 생성"""
+    if not GEMINI_API_KEY:
+        return "⚠️ GEMINI_API_KEY가 설정되지 않아 AI 심층 분석을 스킵합니다."
+
+    try:
+        client = genai.Client(api_key=GEMINI_API_KEY)
+
+        # 상위 영상 10개의 데이터 요약
+        top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
+
+        prompt = f"""
+        아래는 오늘 주요 여권 성향 정치 유튜브 채널들의 상위 영상 데이터입니다:
+        {top_videos}
+
+        이 데이터를 분석하여 텔레그램 리포트에 포함할 심층 인사이트를 작성해 주세요.
+        다음 양식(HTML 태그 사용)에 맞추어 짧고 명확하게 작성해 주세요:
+
+        <b>🧠 AI 심층 분석 인사이트</b>
+        • <b>💡 핵심 기류</b>: (오늘 유튜브 생태계를 관통하는 주요 흐름 2문장 요약)
+        • <b>⚠️ 리스크/논쟁 키워드</b>: (특정 인물 의혹이나 정쟁 유발 키워드 언급)
+        • <b>🎯 대응 시사점</b>: (캠프/기획자 입장에서의 1줄 전략 제언)
+        """
+
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=prompt,
+        )
+        return response.text
+    except Exception as e:
+        print(f"Gemini API 호출 오류: {e}")
+        return "⚠️ AI 심층 분석 생성 중 오류가 발생했습니다."
+
+
 def send_telegram_message(message):
-    """텔레그램 메시지 발송"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
         "chat_id": TELEGRAM_CHAT_ID,
@@ -208,7 +228,6 @@ def run_monitoring():
     hot_100k_count = len(df[df["조회수"] >= 100000])
     top_video = df.iloc[0]
 
-    # 💡 [개선] 시당 조회수는 15분(0.25시간) 이상 경과된 영상 중에서만 산출 (초단기 스파이크 착시 방지)
     df_min15 = df[df["경과시간_hours"] >= 0.25]
     if not df_min15.empty:
         df_vph = df_min15.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
@@ -217,7 +236,6 @@ def run_monitoring():
 
     top_vph = df_vph.iloc[0]
 
-    # 프레임 분포
     frame_counts = df["프레임"].value_counts().to_dict()
     frame_summary_parts = []
     for frame, cnt in sorted(frame_counts.items(), key=lambda x: -x[1]):
@@ -228,6 +246,9 @@ def run_monitoring():
     top_channel_safe = html.escape(str(top_video["채널명"]))
     top_vph_channel_safe = html.escape(str(top_vph["채널명"]))
 
+    # AI 심층 인사이트 생성
+    ai_insight_text = generate_ai_insight(df)
+
     msg = f"📊 <b>여권 성향 유튜브 모니터링</b>\n"
     msg += f"⏱ 기준: KST {now_str} (쇼츠 제외)\n\n"
     msg += f"💡 <b>[오늘의 요약]</b>\n"
@@ -236,9 +257,13 @@ def run_monitoring():
     msg += f"• 👑 조회수 1위: <b>[{top_channel_safe}]</b> ({top_video['조회수']:,}회)\n"
     msg += f"• 🚀 시당 1위: <b>[{top_vph_channel_safe}]</b> (시당 +{top_vph['시간당조회수']:,}회)\n"
     msg += f"• 📌 주요 프레임: {frame_summary}\n\n"
+
+    # AI 심층 인사이트 섹션 추가
+    msg += f"───────────────────\n\n"
+    msg += f"{ai_insight_text}\n\n"
     msg += f"───────────────────\n\n"
 
-    # ----- 1. 조회수 기준 TOP (채널당 최대 2개만 노출) -----
+    # ----- 1. 조회수 기준 TOP -----
     msg += f"<b>📈 조회수 TOP (채널별 상위 2개 제한)</b>\n\n"
 
     channel_counts_top = {}
@@ -246,8 +271,6 @@ def run_monitoring():
 
     for idx, row in df.iterrows():
         channel = row["채널명"]
-
-        # 채널 노출 횟수 체크 (2개 초과 시 스킵)
         current_count = channel_counts_top.get(channel, 0)
         if current_count >= 2:
             continue
@@ -275,10 +298,10 @@ def run_monitoring():
         msg += f'   👉 <a href="{row["링크"]}">[영상 보기]</a>\n\n'
 
         rank += 1
-        if rank > 10:  # 총 10개 채워지면 중단
+        if rank > 10:
             break
 
-    # ----- 2. 시당 조회수 기준 TOP 5 (15분 이상 경과 & 채널당 1개만 노출) -----
+    # ----- 2. 시당 조회수 기준 TOP 5 -----
     msg += f"───────────────────\n\n"
     msg += f"<b>🚀 지금 뜨는 영상 TOP 5 (15분 이상 경과 / 채널별 1개)</b>\n\n"
 
@@ -287,8 +310,6 @@ def run_monitoring():
 
     for idx, row in df_vph.iterrows():
         channel = row["채널명"]
-
-        # 시당 순위는 다양한 채널을 조명하기 위해 채널당 1개로 제한
         if channel_counts_vph.get(channel, 0) >= 1:
             continue
 
@@ -304,7 +325,7 @@ def run_monitoring():
         msg += f'   👉 <a href="{row["링크"]}">[영상 보기]</a>\n\n'
 
         vph_rank += 1
-        if vph_rank > 5:  # 총 5개 채워지면 중단
+        if vph_rank > 5:
             break
 
     send_telegram_message(msg)
