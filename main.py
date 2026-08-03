@@ -34,18 +34,18 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
+# 키워드 보강 (창원, 합동연설회, 라이브 등 추가)
 FRAME_KEYWORDS = {
     "전당대회/경선": [
         "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
-        "토론", "재검표", "부정선거", "윤리위", "당규"
+        "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "창원", "전국당원대회"
     ],
     "당내/인물": [
-        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "홍사훈",
-        "주진우", "이석현", "신인규", "이이제이", "반명"
+        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명"
     ],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권", "대통령"],
-    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표"],
+    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시"],
 }
 
 
@@ -128,7 +128,10 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     elapsed_str = f"{int(elapsed_hours)}시간 전"
 
                 title = snippet["title"]
-                is_live_video = any(kw in title.lower() for kw in ["live", "라이브"])
+                
+                # 정규 라이브 코너 및 제목 기반 라이브 감지 강화
+                live_keywords = ["live", "라이브", "12시에 만나요", "뉴스공장 2026", "매불쇼", "브리핑"]
+                is_live_video = any(kw in title.lower() for kw in live_keywords)
 
                 video_list.append({
                     "채널명": channel_name,
@@ -159,31 +162,31 @@ def generate_ai_insight(df, frame_stat_summary):
         top_videos = df.head(10)[["채널명", "제목", "프레임", "조회수", "시간당조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 수집된 유튜브 모니터링 데이터를 엄밀히 분석하는 수석 데이터 분석가입니다.
-        아래 제공된 [상위 영상 데이터]와 [프레임별 건수 및 조회수 비중]만을 바탕으로 정갈한 보고서 인사이트를 작성하세요.
+        당신은 데이터의 미세한 변화와 착시를 잡아내는 최고 수준의 정치/데이터 분석가입니다.
+        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]을 바탕으로 비즈니스 보고서용 인사이트를 작성하세요.
 
         [상위 영상 데이터]
         {top_videos}
 
-        [프레임별 현황 (건수 및 조회수 비중)]
+        [프레임별 현황 (건수비중 | 조회수비중)]
         {frame_stat_summary}
 
-        [작성 규칙]
-        1. 이모티콘을 일절 사용하지 마세요.
-        2. 건수 대비 조회수 비중이 높거나 특정 영상이 대다수의 조회수를 견인할 경우, "단 X건임에도 조회수 비중 Y% 기록"과 같이 수량과 영향력의 대비를 명확히 짚어주세요.
-        3. '영상 제목'에 직접 언급된 단어만 인용하고 외부 정보, 추측성 정치 현안, 지어낸 키워드는 절대 쓰지 마세요.
+        [핵심 분석 및 작성 규칙 - 반드시 준수]
+        1. [프레임 간 영향력 격차 분석]: 전당대회/경선 프레임의 조회수 비중과 민생/경제/정책 프레임의 조회수 비중을 직접 수치로 비교하세요. (예: "전당대회 프레임은 건수에 비해 조회 비중이 2.7%로 저조한 반면, 민생/경제는 단 1건으로 9.7%를 기록하며 압도적 관심 차이를 보임")
+        2. [패널 이름 제외]: 홍사훈, 주진우, 노근창, 이선민 등 단순 방송 패널/출연자 이름은 '주요 언급 키워드'에서 전면 제외하고, 핵심 정치인(정청래, 김민석 등) 및 주요 이슈 단어만 포함하세요.
+        3. [이모티콘 사용 엄금 & 팩트 준수]: 외부 추측이나 왜곡 없이 엄격한 문체로 작성하세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (내용 2문장)
+        - (건수 대비 조회수 비중의 격차 및 관심도 이동 현황을 2문장으로 요약)
 
         2. 주요 언급 키워드
-        - (제목에 직접 등장한 키워드 나열)
+        - (단순 패널/출연자를 제외한 핵심 정치인 및 주요 이슈 키워드 나열)
 
         3. 모니터링 시사점
-        - (내용 1문장)
+        - (전대 국면 대비 실제 시청자 관심사 향방에 대한 데이터 기반 제언 1문장)
         """
 
         response = client.models.generate_content(
@@ -235,8 +238,14 @@ def run_monitoring():
     df = df.sort_values(by="조회수", ascending=False).reset_index(drop=True)
 
     total_videos = len(df)
-    collected_channels = df["채널명"].nunique()
-    zero_channels = total_target_channels - collected_channels
+    collected_channels_set = set(df["채널명"].unique())
+    all_channels_set = set(TARGET_CHANNELS.keys())
+    missing_channels = list(all_channels_set - collected_channels_set)
+    
+    collected_count = len(collected_channels_set)
+    missing_count = len(missing_channels)
+    
+    missing_str = ", ".join(missing_channels) if missing_channels else "없음"
     hot_100k_count = len(df[df["조회수"] >= 100000])
 
     # ----- [라이브 시당 착시 방지 보정 필터] -----
@@ -283,7 +292,9 @@ def run_monitoring():
     msg += f"▪ 기준 시각: KST {now_str} (쇼츠 제외)\n\n"
     
     msg += f"<b>■ 모니터링 개요</b>\n"
-    msg += f"• 대상 채널: 총 {total_target_channels}개 (수집 {collected_channels}개 / 미수집 {zero_channels}개)\n"
+    msg += f"• 대상 채널: 총 {total_target_channels}개 (수집 {collected_count}개 / 미수집 {missing_count}개)\n"
+    if missing_channels:
+        msg += f"• 미수집 채널: [{missing_str}]\n"
     msg += f"• 수집 영상: 총 {total_videos}개 (10만+ 대박 영상: {hot_100k_count}개)\n\n"
 
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
@@ -309,7 +320,7 @@ def run_monitoring():
         views = row["조회수"]
         safe_title = html.escape(str(row["제목"]))
         safe_channel = html.escape(str(channel))
-        frame_tag = f"[{row['frame']}] " if row.get("frame") and row['frame'] != "기타" else ""
+        frame_tag = f"[{row['프레임']}] " if row['프레임'] != "기타" else ""
 
         msg += f"<b>{rank}. [{safe_channel}]</b> ({row['게시일시']} | {row['경과시간']})\n"
         msg += f"   • 조회수: <b>{views:,}회</b> (시간당 +{row['시간당조회수']:,}회) {frame_tag}\n"
