@@ -34,10 +34,9 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# 인물 집계용 추적 리스트
-TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "김어준"]
+# 실제 정치인 및 후보자 중심 추적 리스트 (김어준 채널명 착시 제외)
+TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
-# 프레임 분류 키워드 (우선순위 조정 및 '대통령' 이동)
 FRAME_KEYWORDS = {
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제"],
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회"],
@@ -46,7 +45,6 @@ FRAME_KEYWORDS = {
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
 }
 
-# 종합방송 판정용 키워드 (90분 이상 제약과 동시 적용)
 OMNIBUS_KEYWORDS = [
     "뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일",
     "[full]", "풀버전", "풀방송", "김용민 브리핑] 아침7시", "뉴스하이킥 full", "시선집중 full"
@@ -90,7 +88,6 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
 
 
 def fetch_recent_videos(youtube, playlist_id, channel_name):
-    """페이지네이션을 적용하여 24시간 이내 모든 영상을 수집 (max_results 제한 제거)"""
     video_list = []
     now_kst = datetime.now(KST)
     twenty_four_hours_ago = now_kst - timedelta(hours=24)
@@ -131,7 +128,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name):
                 pub_time_utc = datetime.fromisoformat(pub_date_str)
                 pub_time_kst = pub_time_utc.astimezone(KST)
 
-                # 24시간 범위를 벗어나면 이후 페이지 검색 중단
                 if pub_time_kst < twenty_four_hours_ago:
                     stop_pagination = True
                     continue
@@ -151,7 +147,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name):
 
                 title = snippet["title"]
                 
-                # 라이브 판정 과하게 적용되던 오류 수정 (채널명 매불쇼 제거, 키워드+길이 정교화)
                 live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live"]
                 is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
 
@@ -187,7 +182,6 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # AI에게 전달 시 보정 전 시당 수치는 전달하지 않고 표에 인용 가능한 데이터만 제공
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 
         prompt = f"""
@@ -203,11 +197,12 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
         [주요 인물 언급 현황 (건수 | 총조회수)]
         {person_summary_str}
 
-        [엄격한 작성 규칙 - 하드코딩 및 추측 엄금]
-        1. [키워드 원천 제한]: '주요 언급 키워드'는 오직 위에 제시된 [상위 영상 데이터]의 제목에 직접 나타난 단어만 인용하세요. 데이터에 없는 단어(예: 과거에 언급되었던 키워드 등)를 지어내거나 덧붙이면 무효 처리됩니다.
-        2. [검증 불가능한 시당 수치 사용 금지]: 데이터에 직접 적히지 않은 시간당 조회수 숫자를 지어내지 마세요. 오직 건수 비중(%)과 조회수 비중(%)만 사용하세요.
-        3. [처방/훈수 금지]: 모니터링 시사점에는 "~해야 합니다", "~가 시급합니다" 같은 정치적 대응 지침을 쓰지 말고, 데이터에서 관측된 객관적 현상과 시청 관심사 추이만 담백하게 총평하세요.
-        4. [이모티콘 사용 금지]: 정갈한 문체로 작성하세요.
+        [엄격한 작성 규칙 - 편향 표현 엄금]
+        1. [키워드 원천 제한]: '주요 언급 키워드'는 오직 위에 제시된 [상위 영상 데이터]의 제목에 직접 나타난 단어만 인용하세요. 제목에 없는 단어를 지어내거나 덧붙이면 무효 처리됩니다.
+        2. [언급량 해석 금지]: 인물 언급량과 조회수는 단순 화제성 지표이며 지지·우세를 뜻하지 않습니다. "확보", "독주", "우세", "지지세" 같은 단어를 절대 사용하지 말고, "가장 많이 언급됨", "관련 영상 조회수가 가장 높음"으로만 사실대로 서술하세요.
+        3. [검증 불가능한 시당 수치 사용 금지]: 데이터에 직접 적히지 않은 시간당 조회수 숫자를 지어내지 마세요. 오직 건수 비중(%)과 조회수 비중(%)만 사용하세요.
+        4. [처방/훈수 금지]: 모니터링 관측 평가에 정치적 대응 지침("~해야 합니다")을 쓰지 말고, 데이터에서 관측된 객관적 현상과 시청 관심사 추이만 담백하게 총평하세요.
+        5. [이모티콘 사용 금지]: 정갈한 문체로 작성하세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
@@ -332,7 +327,7 @@ def run_monitoring():
     frame_summary_text = "\n".join(frame_summary_lines)
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
 
-    # ----- [2. 주요 인물별 언급 및 조회수 집계 추가] -----
+    # ----- [2. 주요 인물별 언급 및 조회수 집계] -----
     person_stat_list = []
     person_summary_for_ai = []
 
@@ -343,7 +338,6 @@ def run_monitoring():
             p_views = int(sel["조회수"].sum())
             person_stat_list.append((p, p_cnt, p_views))
 
-    # 조회수 순 정렬
     person_stat_list.sort(key=lambda x: x[2], reverse=True)
 
     person_summary_lines = []
