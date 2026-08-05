@@ -34,25 +34,22 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# 단일 이슈 프레임 키워드 (실시간 공방 키워드 보강)
+# 인물 집계용 추적 리스트
+TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "김어준"]
+
+# 프레임 분류 키워드 (우선순위 조정 및 '대통령' 이동)
 FRAME_KEYWORDS = {
-    "전당대회/경선": [
-        "전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보",
-        "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "창원", "전국당원대회"
-    ],
-    "당내/인물": [
-        "정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희",
-        "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평"
-    ],
+    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제"],
+    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회"],
+    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평"],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
-    "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권", "대통령"],
-    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인"],
+    "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
 }
 
-# 종합방송 판정용 키워드 강화 (풀버전, 풀방송 패턴 정교화)
+# 종합방송 판정용 키워드 (90분 이상 제약과 동시 적용)
 OMNIBUS_KEYWORDS = [
     "뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일",
-    "[full]", "풀버전", "풀방송", "매불쇼", "김용민 브리핑] 아침7시", "뉴스하이킥", "시선집중 full"
+    "[full]", "풀버전", "풀방송", "김용민 브리핑] 아침7시", "뉴스하이킥 full", "시선집중 full"
 ]
 
 
@@ -69,8 +66,7 @@ def parse_iso8601_duration(duration_str):
 def classify_frame(title: str, duration_sec: int) -> str:
     title_lower = title.lower()
 
-    # [보정] 영상 길이가 90분(5400초) 이상이거나 제목에 풀버전/종합방송 특성이 강한 경우 우선 판정
-    if duration_sec >= 5400 or any(p in title_lower for p in ["풀버전", "[full]", "풀방송"]):
+    if duration_sec >= 5400 or any(p in title_lower for p in ["[full]", "풀방송"]):
         for kw in OMNIBUS_KEYWORDS:
             if kw.lower() in title_lower:
                 return "종합방송"
@@ -93,41 +89,53 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
     return None
 
 
-def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
+def fetch_recent_videos(youtube, playlist_id, channel_name):
+    """페이지네이션을 적용하여 24시간 이내 모든 영상을 수집 (max_results 제한 제거)"""
     video_list = []
     now_kst = datetime.now(KST)
     twenty_four_hours_ago = now_kst - timedelta(hours=24)
+    next_page_token = None
 
-    try:
-        playlist_response = youtube.playlistItems().list(
-            part="snippet", playlistId=playlist_id, maxResults=max_results
-        ).execute()
+    while True:
+        try:
+            playlist_response = youtube.playlistItems().list(
+                part="snippet",
+                playlistId=playlist_id,
+                maxResults=50,
+                pageToken=next_page_token
+            ).execute()
 
-        video_ids = [item["snippet"]["resourceId"]["videoId"] for item in playlist_response.get("items", [])]
-        if not video_ids:
-            return video_list
+            video_ids = [item["snippet"]["resourceId"]["videoId"] for item in playlist_response.get("items", [])]
+            if not video_ids:
+                break
 
-        videos_response = youtube.videos().list(
-            part="snippet,statistics,contentDetails", id=",".join(video_ids)
-        ).execute()
+            videos_response = youtube.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(video_ids)
+            ).execute()
 
-        for item in videos_response.get("items", []):
-            snippet = item["snippet"]
-            stats = item.get("statistics", {})
-            content_details = item.get("contentDetails", {})
+            stop_pagination = False
+            for item in videos_response.get("items", []):
+                snippet = item["snippet"]
+                stats = item.get("statistics", {})
+                content_details = item.get("contentDetails", {})
 
-            if snippet.get("liveBroadcastContent", "none") == "upcoming":
-                continue
+                if snippet.get("liveBroadcastContent", "none") == "upcoming":
+                    continue
 
-            duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
-            if 0 < duration_sec <= 60:
-                continue
+                duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
+                if 0 < duration_sec <= 60:
+                    continue
 
-            pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
-            pub_time_utc = datetime.fromisoformat(pub_date_str)
-            pub_time_kst = pub_time_utc.astimezone(KST)
+                pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
+                pub_time_utc = datetime.fromisoformat(pub_date_str)
+                pub_time_kst = pub_time_utc.astimezone(KST)
 
-            if pub_time_kst >= twenty_four_hours_ago:
+                # 24시간 범위를 벗어나면 이후 페이지 검색 중단
+                if pub_time_kst < twenty_four_hours_ago:
+                    stop_pagination = True
+                    continue
+
                 elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
                 elapsed_hours = max(elapsed_hours, 0.01)
 
@@ -143,8 +151,9 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
 
                 title = snippet["title"]
                 
-                live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "뉴스공장 2026", "매불쇼", "브리핑", "뉴잼스", "현장"]
-                is_live_video = any(kw in title.lower() for kw in live_keywords)
+                # 라이브 판정 과하게 적용되던 오류 수정 (채널명 매불쇼 제거, 키워드+길이 정교화)
+                live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live"]
+                is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
 
                 video_list.append({
                     "채널명": channel_name,
@@ -159,25 +168,31 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, max_results=8):
                     "링크": f"https://youtu.be/{item['id']}",
                     "is_live": is_live_video
                 })
-    except Exception as e:
-        print(f"영상 수집 오류 ({channel_name}): {e}")
+
+            next_page_token = playlist_response.get("nextPageToken")
+            if not next_page_token or stop_pagination:
+                break
+
+        except Exception as e:
+            print(f"영상 수집 오류 ({channel_name}): {e}")
+            break
 
     return video_list
 
 
-def generate_ai_insight(df_top, frame_stat_summary):
+def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
     if not GEMINI_API_KEY:
         return "[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]"
 
     try:
         client = genai.Client(api_key=GEMINI_API_KEY)
 
-        # AI에게 전달하는 데이터에서 '보정 전 시당 수치'를 제거하고 오직 누적 조회수와 프레임만 전달하여 수치 환각 차단
+        # AI에게 전달 시 보정 전 시당 수치는 전달하지 않고 표에 인용 가능한 데이터만 제공
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 엄밀한 수치 검증을 바탕으로 보고서를 작성하는 수석 데이터 분석가입니다.
-        아래 제공된 [상위 영상 데이터]와 [프레임별 현황]만을 바탕으로 인사이트를 작성하세요.
+        당신은 엄밀한 수치와 현현된 데이터에만 기반하여 객관적 동향을 요약하는 수석 분석가입니다.
+        아래 제공된 [상위 영상 데이터], [프레임별 현황], [주요 인물 언급 현황]만을 바탕으로 리포트를 작성하세요.
 
         [상위 영상 데이터]
         {top_videos}
@@ -185,23 +200,26 @@ def generate_ai_insight(df_top, frame_stat_summary):
         [프레임별 현황 (건수비중 | 조회수비중)]
         {frame_stat_summary}
 
-        [엄격한 작성 규칙 - 위반 시 보고서 무효]
-        1. [검증 불가능한 시당 수치 인용 절대 금지]: 데이터나 표에 직접 적혀있지 않은 '시간당 조회수(예: 몇십만 회 등)' 수치를 절대로 지어내거나 인용하지 마세요. 오직 [프레임별 현황]의 건수 비중(%)과 조회수 비중(%) 숫자만 인용하세요.
-        2. [도달률 대 물량의 불일치 서술]: 당내/인물 및 전당대회 프레임은 업로드 건수(생산량)에 비해 실제 조회수 비중(도달률)이 크게 떨어짐을 정확히 짚으세요. (예: "내부 공방 관련 콘텐츠는 생산 물량 대비 실제 시청 도달 비중이 낮아 대중적 확산력이 제한적임")
-        3. [실시간 공방 키워드 유지]: '친청계 스캔들', '리박스쿨', '여론조사' 등 진영 내 실시간 공방 소재를 '주요 언급 키워드'에 반영하세요.
-        4. [이모티콘 절대 금지]: 단정적 추측을 피하고 정갈한 비즈니스 폼으로 작성하세요.
+        [주요 인물 언급 현황 (건수 | 총조회수)]
+        {person_summary_str}
+
+        [엄격한 작성 규칙 - 하드코딩 및 추측 엄금]
+        1. [키워드 원천 제한]: '주요 언급 키워드'는 오직 위에 제시된 [상위 영상 데이터]의 제목에 직접 나타난 단어만 인용하세요. 데이터에 없는 단어(예: 과거에 언급되었던 키워드 등)를 지어내거나 덧붙이면 무효 처리됩니다.
+        2. [검증 불가능한 시당 수치 사용 금지]: 데이터에 직접 적히지 않은 시간당 조회수 숫자를 지어내지 마세요. 오직 건수 비중(%)과 조회수 비중(%)만 사용하세요.
+        3. [처방/훈수 금지]: 모니터링 시사점에는 "~해야 합니다", "~가 시급합니다" 같은 정치적 대응 지침을 쓰지 말고, 데이터에서 관측된 객관적 현상과 시청 관심사 추이만 담백하게 총평하세요.
+        4. [이모티콘 사용 금지]: 정갈한 문체로 작성하세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (종합방송을 제외한 단일 프레임 현황 및 물량 대비 도달률 불일치를 짚는 2문장)
+        - (주요 프레임의 건수 대비 조회수 도달률과 최상위 언급 인물 동향을 객관적으로 2문장 요약)
 
         2. 주요 언급 키워드
-        - (단순 패널/출연자를 제외한 핵심 정치인 및 실시간 공방 키워드)
+        - (제공된 제목에 직접 등장한 주요 인물 및 키워드 나열)
 
-        3. 모니터링 시사점
-        - (데이터 수치에 기반한 시사점 1문장)
+        3. 모니터링 관측 평가
+        - (데이터에서 드러난 관측 사실 중심 총평 1문장)
         """
 
         primary_model = 'gemini-3-flash-preview'
@@ -248,7 +266,7 @@ def run_monitoring():
     for channel_name, channel_id in TARGET_CHANNELS.items():
         uploads_id = get_channel_uploads_playlist_id(youtube, channel_id)
         if uploads_id:
-            videos = fetch_recent_videos(youtube, uploads_id, channel_name, max_results=8)
+            videos = fetch_recent_videos(youtube, uploads_id, channel_name)
             all_data.extend(videos)
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
@@ -286,6 +304,7 @@ def run_monitoring():
     missing_str = ", ".join(missing_channels) if missing_channels else "없음"
     hot_100k_count = len(df[df["조회수"] >= 100000])
 
+    # ----- [1. 프레임별 건수 및 조회수 비중 집계] -----
     total_views = df["조회수"].sum()
     frame_group = df.groupby("프레임").agg(
         건수=("조회수", "count"),
@@ -305,10 +324,7 @@ def run_monitoring():
         cnt_ratio = row["건수비중"]
         view_ratio = row["조회비중"]
 
-        if f_name == "종합방송":
-            note = " (코너 혼재, 프레임 판정 불가)"
-        else:
-            note = ""
+        note = " (코너 혼재, 프레임 판정 불가)" if f_name == "종합방송" else ""
 
         frame_summary_lines.append(f"• {f_name} : <b>{cnt}개</b> ({cnt_ratio}%) | <b>{view_ratio}%</b>{note}")
         frame_stat_summary_for_ai.append(f"- {f_name}: {cnt}개({cnt_ratio}%) | 조회비중 {view_ratio}%{note}")
@@ -316,8 +332,31 @@ def run_monitoring():
     frame_summary_text = "\n".join(frame_summary_lines)
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
 
-    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str)
+    # ----- [2. 주요 인물별 언급 및 조회수 집계 추가] -----
+    person_stat_list = []
+    person_summary_for_ai = []
 
+    for p in TRACK_PERSONS:
+        sel = df[df["제목"].str.contains(p, regex=False)]
+        p_cnt = len(sel)
+        if p_cnt > 0:
+            p_views = int(sel["조회수"].sum())
+            person_stat_list.append((p, p_cnt, p_views))
+
+    # 조회수 순 정렬
+    person_stat_list.sort(key=lambda x: x[2], reverse=True)
+
+    person_summary_lines = []
+    for p, cnt, views in person_stat_list:
+        person_summary_lines.append(f"• {p} : <b>{cnt}건</b> (총 {views:,}회)")
+        person_summary_for_ai.append(f"- {p}: {cnt}건 (조회수 {views:,}회)")
+
+    person_summary_text = "\n".join(person_summary_lines) if person_summary_lines else "• 특이 언급 인물 없음"
+    person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
+
+    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str, person_summary_str_for_ai)
+
+    # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
     msg += f"▪ 기준 시각: KST {now_str} (쇼츠 제외)\n\n"
     
@@ -329,6 +368,9 @@ def run_monitoring():
 
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
     msg += f"{frame_summary_text}\n\n"
+
+    msg += f"<b>■ 주요 인물 언급 현황 (건수 | 총조회수)</b>\n"
+    msg += f"{person_summary_text}\n\n"
 
     msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
     msg += f"{ai_insight_text}\n\n"
