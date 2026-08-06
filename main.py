@@ -1,4 +1,5 @@
 import os
+import json
 import requests
 import re
 import html
@@ -16,6 +17,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 KST = timezone(timedelta(hours=9))
+PREV_DATA_FILE = "previous_data.json"
 
 TARGET_CHANNELS = {
     "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
@@ -34,13 +36,15 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# 실제 정치인 및 후보자 중심 추적 리스트 (김어준 채널명 착시 제외)
+# 추적 정치인 리스트
 TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
+# 프레임 분류 키워드 ('언론/미디어' 신설 및 강화)
 FRAME_KEYWORDS = {
+    "언론/미디어": ["언론", "진보언론", "편파보도", "기자", "방송", "세탁", "왜곡", "기괴한", "기사", "보도"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제"],
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회"],
-    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평"],
+    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지"],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
 }
@@ -175,7 +179,25 @@ def fetch_recent_videos(youtube, playlist_id, channel_name):
     return video_list
 
 
-def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
+def load_previous_data():
+    if os.path.exists(PREV_DATA_FILE):
+        try:
+            with open(PREV_DATA_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"이전 데이터 로드 실패: {e}")
+    return None
+
+
+def save_current_data(data):
+    try:
+        with open(PREV_DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"현재 데이터 저장 실패: {e}")
+
+
+def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str):
     if not GEMINI_API_KEY:
         return "[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]"
 
@@ -185,8 +207,8 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 
         prompt = f"""
-        당신은 엄밀한 수치와 현현된 데이터에만 기반하여 객관적 동향을 요약하는 수석 분석가입니다.
-        아래 제공된 [상위 영상 데이터], [프레임별 현황], [주요 인물 언급 현황]만을 바탕으로 리포트를 작성하세요.
+        당신은 수치와 현상 대립을 엄밀히 분석하는 수석 데이터 분석가입니다.
+        아래 제공된 [상위 영상 데이터], [프레임별 현황], [주요 인물 현황 및 전일 대비 변동]만을 바탕으로 리포트를 작성하세요.
 
         [상위 영상 데이터]
         {top_videos}
@@ -194,27 +216,30 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str):
         [프레임별 현황 (건수비중 | 조회수비중)]
         {frame_stat_summary}
 
-        [주요 인물 언급 현황 (건수 | 총조회수)]
+        [주요 인물 언급 현황]
         {person_summary_str}
 
-        [엄격한 작성 규칙 - 편향 표현 엄금]
-        1. [키워드 원천 제한]: '주요 언급 키워드'는 오직 위에 제시된 [상위 영상 데이터]의 제목에 직접 나타난 단어만 인용하세요. 제목에 없는 단어를 지어내거나 덧붙이면 무효 처리됩니다.
-        2. [언급량 해석 금지]: 인물 언급량과 조회수는 단순 화제성 지표이며 지지·우세를 뜻하지 않습니다. "확보", "독주", "우세", "지지세" 같은 단어를 절대 사용하지 말고, "가장 많이 언급됨", "관련 영상 조회수가 가장 높음"으로만 사실대로 서술하세요.
-        3. [검증 불가능한 시당 수치 사용 금지]: 데이터에 직접 적히지 않은 시간당 조회수 숫자를 지어내지 마세요. 오직 건수 비중(%)과 조회수 비중(%)만 사용하세요.
-        4. [처방/훈수 금지]: 모니터링 관측 평가에 정치적 대응 지침("~해야 합니다")을 쓰지 말고, 데이터에서 관측된 객관적 현상과 시청 관심사 추이만 담백하게 총평하세요.
-        5. [이모티콘 사용 금지]: 정갈한 문체로 작성하세요.
+        [전일 대비 주요 변동 추세]
+        {trend_summary_str}
+
+        [엄격한 작성 규칙 - 반드시 준수]
+        1. ['기타'/'종합방송' 프레임 오독 금지]: '기타'나 '종합방송' 프레임에 대해 "시청자의 집중적 관심을 받았다"는 식의 의미 부여를 하지 마세요. 미분류 프레임임을 전제로 단일 이슈 프레임 중심으로 해석하세요.
+        2. [전일 대비 변동성 강조]: [전일 대비 주요 변동 추세] 데이터를 바탕으로 특정 인물(예: 최민희 등)의 조회수 급증/급감이나 프레임 공격-방어 전환(예: 신천지 프레임 반격 등)을 핵심 기류 첫 문장에서 지목하세요.
+        3. [진영 간 대립구도 반영]: 동일 사건(예: 특정 방송 출연/질의)을 두고 채널 간 시각이 정반대로 엇갈리는 프레임 대립이 보일 경우 이를 짚어주세요.
+        4. [키워드 범주 제한]: '주요 언급 키워드'는 파편화된 조각(예: 세탁 효과, 물구나무 등)을 배제하고, [주요 인물, 핵심 정치 이슈, 대립 사건]으로만 8~10개 엄선하여 작성하세요.
+        5. [언급량 평가 금지 및 이모티콘 엄금]: "확보", "우세" 등의 단어와 이모티콘을 쓰지 마세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (주요 프레임의 건수 대비 조회수 도달률과 최상위 언급 인물 동향을 객관적으로 2문장 요약)
+        - (전일 대비 인물/프레임 변동 추세와 진영 간 시각 대립 현황을 포함해 2문장 요약)
 
         2. 주요 언급 키워드
-        - (제공된 제목에 직접 등장한 주요 인물 및 키워드 나열)
+        - (주요 인물 및 핵심 정치 이슈 키워드 나열)
 
         3. 모니터링 관측 평가
-        - (데이터에서 드러난 관측 사실 중심 총평 1문장)
+        - (데이터 변동에 기반한 분석가 관점의 총평 1문장)
         """
 
         primary_model = 'gemini-3-flash-preview'
@@ -327,28 +352,48 @@ def run_monitoring():
     frame_summary_text = "\n".join(frame_summary_lines)
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
 
-    # ----- [2. 주요 인물별 언급 및 조회수 집계] -----
-    person_stat_list = []
+    # ----- [2. 주요 인물별 언급 및 전일 대비 변동 계산] -----
+    prev_data = load_previous_data()
+    prev_persons = prev_data.get("persons", {}) if prev_data else {}
+
+    curr_persons_data = {}
+    person_summary_lines = []
     person_summary_for_ai = []
+    trend_summary_for_ai = []
 
     for p in TRACK_PERSONS:
         sel = df[df["제목"].str.contains(p, regex=False)]
         p_cnt = len(sel)
+        p_views = int(sel["조회수"].sum()) if p_cnt > 0 else 0
+
+        curr_persons_data[p] = {"cnt": p_cnt, "views": p_views}
+
         if p_cnt > 0:
-            p_views = int(sel["조회수"].sum())
-            person_stat_list.append((p, p_cnt, p_views))
+            diff_str = ""
+            if p in prev_persons:
+                prev_views = prev_persons[p].get("views", 0)
+                diff = p_views - prev_views
+                if prev_views > 0:
+                    pct = round((diff / prev_views) * 100, 1)
+                    sign = "+" if pct >= 0 else ""
+                    diff_str = f" (전일 대비 {sign}{pct}%)"
+                    trend_summary_for_ai.append(f"- {p}: 전일 {prev_views:,}회 -> 금일 {p_views:,}회 ({sign}{pct}%)")
 
-    person_stat_list.sort(key=lambda x: x[2], reverse=True)
+            person_summary_lines.append((p, p_cnt, p_views, f"• {p} : <b>{cnt}건</b> (총 {p_views:,}회){diff_str}"))
+            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (조회수 {p_views:,}회)")
 
-    person_summary_lines = []
-    for p, cnt, views in person_stat_list:
-        person_summary_lines.append(f"• {p} : <b>{cnt}건</b> (총 {views:,}회)")
-        person_summary_for_ai.append(f"- {p}: {cnt}건 (조회수 {views:,}회)")
-
-    person_summary_text = "\n".join(person_summary_lines) if person_summary_lines else "• 특이 언급 인물 없음"
+    # 조회수 순 정렬
+    person_summary_lines.sort(key=lambda x: x[2], reverse=True)
+    
+    p_text_list = [item[3] for item in person_summary_lines]
+    person_summary_text = "\n".join(p_text_list) if p_text_list else "• 특이 언급 인물 없음"
     person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
+    trend_summary_str_for_ai = "\n".join(trend_summary_for_ai) if trend_summary_for_ai else "전일 데이터 대비 유의미한 변동 없음"
 
-    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str, person_summary_str_for_ai)
+    # 현재 데이터 저장 (다음 실행 시 전일 비교용)
+    save_current_data({"timestamp": now_str, "persons": curr_persons_data})
+
+    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str, person_summary_str_for_ai, trend_summary_str_for_ai)
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
