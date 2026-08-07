@@ -149,7 +149,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name):
 
                 title = snippet["title"]
                 
-                # 뉴스공장 본방송 및 정규 라이브 쿨다운 식별 키워드 보강
                 live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live", "뉴스공장 2026", "겸손은힘들다"]
                 is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
 
@@ -451,7 +450,7 @@ def run_monitoring():
         if is_stabilized_vph(row):
             vph_str = f"시간당 +{row['시간당조회수']:,}회"
         else:
-            vph_str = "시당 산출 제외"
+            vph_str = "시간당 산출 제외"
 
         msg += f"<b>{rank}. [{safe_channel}]</b> ({row['게시일시']} | {row['경과시간']})\n"
         msg += f"   • 조회수: <b>{views:,}회</b> ({vph_str}) {frame_tag}\n"
