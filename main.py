@@ -36,10 +36,8 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# 추적 정치인 리스트
 TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
-# 프레임 분류 키워드 ('언론/미디어' 신설 및 강화)
 FRAME_KEYWORDS = {
     "언론/미디어": ["언론", "진보언론", "편파보도", "기자", "방송", "세탁", "왜곡", "기괴한", "기사", "보도"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제"],
@@ -264,19 +262,39 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
 
 def send_telegram_message(message):
+    """텔레그램 메시지 길이에 맞춰 3,800자 단위 분할 전송 및 결과 로그 출력"""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
-        "text": message,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    }
-    try:
-        response = requests.post(url, data=payload, timeout=10)
-        return response.json()
-    except Exception as e:
-        print(f"❌ 텔레그램 통신 에러: {e}")
-        return None
+    
+    MAX_LEN = 3800
+    if len(message) <= MAX_LEN:
+        chunks = [message]
+    else:
+        chunks = []
+        while len(message) > MAX_LEN:
+            split_idx = message.rfind("\n\n", 0, MAX_LEN)
+            if split_idx == -1:
+                split_idx = MAX_LEN
+            chunks.append(message[:split_idx])
+            message = message[split_idx:].lstrip()
+        if message:
+            chunks.append(message)
+
+    for i, chunk in enumerate(chunks, 1):
+        payload = {
+            "chat_id": TELEGRAM_CHAT_ID,
+            "text": chunk,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True
+        }
+        try:
+            response = requests.post(url, data=payload, timeout=10)
+            res_json = response.json()
+            if not res_json.get("ok"):
+                print(f"❌ 텔레그램 전송 실패 (Part {i}/{len(chunks)}): {res_json}")
+            else:
+                print(f"✅ 텔레그램 메시지 전송 성공 (Part {i}/{len(chunks)})")
+        except Exception as e:
+            print(f"❌ 텔레그램 통신 에러 (Part {i}/{len(chunks)}): {e}")
 
 
 def run_monitoring():
@@ -379,10 +397,9 @@ def run_monitoring():
                     diff_str = f" (전일 대비 {sign}{pct}%)"
                     trend_summary_for_ai.append(f"- {p}: 전일 {prev_views:,}회 -> 금일 {p_views:,}회 ({sign}{pct}%)")
 
-            person_summary_lines.append((p, p_cnt, p_views, f"• {p} : <b>{cnt}건</b> (총 {p_views:,}회){diff_str}"))
+            person_summary_lines.append((p, p_cnt, p_views, f"• {p} : <b>{p_cnt}건</b> (총 {p_views:,}회){diff_str}"))
             person_summary_for_ai.append(f"- {p}: {p_cnt}건 (조회수 {p_views:,}회)")
 
-    # 조회수 순 정렬
     person_summary_lines.sort(key=lambda x: x[2], reverse=True)
     
     p_text_list = [item[3] for item in person_summary_lines]
@@ -390,7 +407,6 @@ def run_monitoring():
     person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
     trend_summary_str_for_ai = "\n".join(trend_summary_for_ai) if trend_summary_for_ai else "전일 데이터 대비 유의미한 변동 없음"
 
-    # 현재 데이터 저장 (다음 실행 시 전일 비교용)
     save_current_data({"timestamp": now_str, "persons": curr_persons_data})
 
     ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str, person_summary_str_for_ai, trend_summary_str_for_ai)
