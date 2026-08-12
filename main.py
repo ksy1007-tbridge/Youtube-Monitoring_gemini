@@ -108,7 +108,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
         except Exception as e:
             print(f"플레이리스트 수집 오류 ({channel_name}): {e}")
 
-    # 2. 이동형TV 등 누락 채널용 Search API 백업 수집 (스트리밍/최신영상 직접 조회)
+    # 2. 이동형TV 등 백업 수집
     try:
         search_response = youtube.search().list(
             part="snippet",
@@ -131,65 +131,69 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     if not video_ids:
         return []
 
-    try:
-        videos_response = youtube.videos().list(
-            part="snippet,statistics,contentDetails",
-            id=",".join(video_ids)
-        ).execute()
+    # 3. YouTube API 50개 제한 대비 (Chunking 분할 조회)
+    chunk_size = 50
+    for i in range(0, len(video_ids), chunk_size):
+        chunk_ids = video_ids[i:i + chunk_size]
+        try:
+            videos_response = youtube.videos().list(
+                part="snippet,statistics,contentDetails",
+                id=",".join(chunk_ids)
+            ).execute()
 
-        for item in videos_response.get("items", []):
-            snippet = item["snippet"]
-            stats = item.get("statistics", {})
-            content_details = item.get("contentDetails", {})
+            for item in videos_response.get("items", []):
+                snippet = item["snippet"]
+                stats = item.get("statistics", {})
+                content_details = item.get("contentDetails", {})
 
-            if snippet.get("liveBroadcastContent", "none") == "upcoming":
-                continue
+                if snippet.get("liveBroadcastContent", "none") == "upcoming":
+                    continue
 
-            duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
-            if 0 < duration_sec <= 60:
-                continue
+                duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
+                if 0 < duration_sec <= 60:
+                    continue
 
-            pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
-            pub_time_utc = datetime.fromisoformat(pub_date_str)
-            pub_time_kst = pub_time_utc.astimezone(KST)
+                pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
+                pub_time_utc = datetime.fromisoformat(pub_date_str)
+                pub_time_kst = pub_time_utc.astimezone(KST)
 
-            if pub_time_kst < thirty_six_hours_ago:
-                continue
+                if pub_time_kst < thirty_six_hours_ago:
+                    continue
 
-            elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
-            elapsed_hours = max(elapsed_hours, 0.01)
+                elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
+                elapsed_hours = max(elapsed_hours, 0.01)
 
-            views = int(stats.get("viewCount", 0))
-            views_per_hour = int(views / elapsed_hours)
+                views = int(stats.get("viewCount", 0))
+                views_per_hour = int(views / elapsed_hours)
 
-            if elapsed_hours < (1.0 / 60.0):
-                elapsed_str = "방금 전"
-            elif elapsed_hours < 1.0:
-                elapsed_str = f"{int(elapsed_hours * 60)}분 전"
-            else:
-                elapsed_str = f"{int(elapsed_hours)}시간 전"
+                if elapsed_hours < (1.0 / 60.0):
+                    elapsed_str = "방금 전"
+                elif elapsed_hours < 1.0:
+                    elapsed_str = f"{int(elapsed_hours * 60)}분 전"
+                else:
+                    elapsed_str = f"{int(elapsed_hours)}시간 전"
 
-            title = snippet["title"]
-            
-            live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live", "뉴스공장 2026", "겸손은힘들다"]
-            is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
+                title = snippet["title"]
+                
+                live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live", "뉴스공장 2026", "겸손은힘들다"]
+                is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
 
-            video_list.append({
-                "채널명": channel_name,
-                "제목": title,
-                "프레임": classify_frame(title, duration_sec),
-                "조회수": views,
-                "시간당조회수": views_per_hour,
-                "경과시간_hours": elapsed_hours,
-                "경과시간": elapsed_str,
-                "게시일시_dt": pub_time_kst,
-                "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
-                "링크": f"https://youtu.be/{item['id']}",
-                "is_live": is_live_video
-            })
+                video_list.append({
+                    "채널명": channel_name,
+                    "제목": title,
+                    "프레임": classify_frame(title, duration_sec),
+                    "조회수": views,
+                    "시간당조회수": views_per_hour,
+                    "경과시간_hours": elapsed_hours,
+                    "경과시간": elapsed_str,
+                    "게시일시_dt": pub_time_kst,
+                    "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
+                    "링크": f"https://youtu.be/{item['id']}",
+                    "is_live": is_live_video
+                })
 
-    except Exception as e:
-        print(f"영상 상세 수집 오류 ({channel_name}): {e}")
+        except Exception as e:
+            print(f"영상 상세 수집 오류 ({channel_name}): {e}")
 
     return video_list
 
@@ -460,7 +464,7 @@ def run_monitoring():
         views = row["조회수"]
         safe_title = html.escape(str(row["제목"]))
         safe_channel = html.escape(str(channel))
-        frame_tag = f"[{row['프레임']}] " if row['프레임'] != "기타" else ""
+        frame_tag = f"[{row['frame']}] " if row.get('frame', '기타') != "기타" else (f"[{row['프레임']}] " if row['프레임'] != "기타" else "")
 
         if is_stabilized_vph(row):
             vph_str = f"시간당 +{row['시간당조회수']:,}회"
