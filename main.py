@@ -40,7 +40,7 @@ TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길"
 
 FRAME_KEYWORDS = {
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "노무현", "노사모", "호남", "계승", "정몽준"],
-    "언론/미디어": ["언론", "진보언론", "편파보도", "기자", "방송", "세탁", "왜곡", "기괴한", "기사", "보도", "저널리즘"],
+    "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "언론", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제", "투자자"],
     "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "호남 비하", "거짓말"],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
@@ -92,7 +92,8 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
 def fetch_recent_videos(youtube, playlist_id, channel_name):
     video_list = []
     now_kst = datetime.now(KST)
-    twenty_four_hours_ago = now_kst - timedelta(hours=24)
+    # 이동형TV 등 라이브 클립 게시 주기를 고려해 36시간으로 수집창 확장
+    thirty_six_hours_ago = now_kst - timedelta(hours=36)
     next_page_token = None
 
     while True:
@@ -130,7 +131,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name):
                 pub_time_utc = datetime.fromisoformat(pub_date_str)
                 pub_time_kst = pub_time_utc.astimezone(KST)
 
-                if pub_time_kst < twenty_four_hours_ago:
+                if pub_time_kst < thirty_six_hours_ago:
                     stop_pagination = True
                     continue
 
@@ -312,7 +313,7 @@ def run_monitoring():
     if not all_data:
         send_telegram_message(
             f"<b>[여권 성향 유튜브 모니터링 리포트]</b>\n({now_str} KST)\n\n"
-            f"최근 24시간 이내에 업로드된 일반 영상이 없습니다."
+            f"최근 수집 범위 이내에 업로드된 일반 영상이 없습니다."
         )
         return
 
@@ -389,9 +390,8 @@ def run_monitoring():
             diff_str = ""
             if p in prev_persons:
                 prev_views = prev_persons[p].get("views", 0)
-                diff = p_views - prev_views
                 if prev_views > 0:
-                    pct = round((diff / prev_views) * 100, 1)
+                    pct = round(((p_views - prev_views) / prev_views) * 100, 1)
                     sign = "+" if pct >= 0 else ""
                     diff_str = f" (전일 대비 {sign}{pct}%)"
                     trend_summary_for_ai.append(f"- {p}: 전일 {prev_views:,}회 -> 금일 {p_views:,}회 ({sign}{pct}%)")
