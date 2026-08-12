@@ -39,8 +39,8 @@ TARGET_CHANNELS = {
 TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
 FRAME_KEYWORDS = {
-    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "노무현", "노사모", "호남", "계승", "정몽준"],
-    "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "언론", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
+    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "노무현", "노사모", "호남", "계승", "정몽준", "폭탄", "쉬쉬하던", "찌라시"],
+    "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제", "투자자"],
     "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "호남 비하", "거짓말"],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
@@ -89,91 +89,107 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
     return None
 
 
-def fetch_recent_videos(youtube, playlist_id, channel_name):
+def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     video_list = []
     now_kst = datetime.now(KST)
-    # 이동형TV 등 라이브 클립 게시 주기를 고려해 36시간으로 수집창 확장
     thirty_six_hours_ago = now_kst - timedelta(hours=36)
-    next_page_token = None
+    
+    video_items_raw = []
 
-    while True:
+    # 1. 기본 플레이리스트 수집
+    if playlist_id:
         try:
             playlist_response = youtube.playlistItems().list(
                 part="snippet",
                 playlistId=playlist_id,
-                maxResults=50,
-                pageToken=next_page_token
+                maxResults=50
             ).execute()
-
-            video_ids = [item["snippet"]["resourceId"]["videoId"] for item in playlist_response.get("items", [])]
-            if not video_ids:
-                break
-
-            videos_response = youtube.videos().list(
-                part="snippet,statistics,contentDetails",
-                id=",".join(video_ids)
-            ).execute()
-
-            stop_pagination = False
-            for item in videos_response.get("items", []):
-                snippet = item["snippet"]
-                stats = item.get("statistics", {})
-                content_details = item.get("contentDetails", {})
-
-                if snippet.get("liveBroadcastContent", "none") == "upcoming":
-                    continue
-
-                duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
-                if 0 < duration_sec <= 60:
-                    continue
-
-                pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
-                pub_time_utc = datetime.fromisoformat(pub_date_str)
-                pub_time_kst = pub_time_utc.astimezone(KST)
-
-                if pub_time_kst < thirty_six_hours_ago:
-                    stop_pagination = True
-                    continue
-
-                elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
-                elapsed_hours = max(elapsed_hours, 0.01)
-
-                views = int(stats.get("viewCount", 0))
-                views_per_hour = int(views / elapsed_hours)
-
-                if elapsed_hours < (1.0 / 60.0):
-                    elapsed_str = "방금 전"
-                elif elapsed_hours < 1.0:
-                    elapsed_str = f"{int(elapsed_hours * 60)}분 전"
-                else:
-                    elapsed_str = f"{int(elapsed_hours)}시간 전"
-
-                title = snippet["title"]
-                
-                live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live", "뉴스공장 2026", "겸손은힘들다"]
-                is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
-
-                video_list.append({
-                    "채널명": channel_name,
-                    "제목": title,
-                    "프레임": classify_frame(title, duration_sec),
-                    "조회수": views,
-                    "시간당조회수": views_per_hour,
-                    "경과시간_hours": elapsed_hours,
-                    "경과시간": elapsed_str,
-                    "게시일시_dt": pub_time_kst,
-                    "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
-                    "링크": f"https://youtu.be/{item['id']}",
-                    "is_live": is_live_video
-                })
-
-            next_page_token = playlist_response.get("nextPageToken")
-            if not next_page_token or stop_pagination:
-                break
-
+            video_items_raw.extend(playlist_response.get("items", []))
         except Exception as e:
-            print(f"영상 수집 오류 ({channel_name}): {e}")
-            break
+            print(f"플레이리스트 수집 오류 ({channel_name}): {e}")
+
+    # 2. 이동형TV 등 누락 채널용 Search API 백업 수집 (스트리밍/최신영상 직접 조회)
+    try:
+        search_response = youtube.search().list(
+            part="snippet",
+            channelId=channel_id,
+            order="date",
+            maxResults=15,
+            type="video"
+        ).execute()
+        
+        existing_ids = {item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})}
+        for s_item in search_response.get("items", []):
+            v_id = s_item["id"].get("videoId")
+            if v_id and v_id not in existing_ids:
+                s_item["snippet"]["resourceId"] = {"videoId": v_id}
+                video_items_raw.append(s_item)
+    except Exception as e:
+        print(f"Search API 백업 수집 오류 ({channel_name}): {e}")
+
+    video_ids = list({item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})})
+    if not video_ids:
+        return []
+
+    try:
+        videos_response = youtube.videos().list(
+            part="snippet,statistics,contentDetails",
+            id=",".join(video_ids)
+        ).execute()
+
+        for item in videos_response.get("items", []):
+            snippet = item["snippet"]
+            stats = item.get("statistics", {})
+            content_details = item.get("contentDetails", {})
+
+            if snippet.get("liveBroadcastContent", "none") == "upcoming":
+                continue
+
+            duration_sec = parse_iso8601_duration(content_details.get("duration", "PT0S"))
+            if 0 < duration_sec <= 60:
+                continue
+
+            pub_date_str = snippet["publishedAt"].replace("Z", "+00:00")
+            pub_time_utc = datetime.fromisoformat(pub_date_str)
+            pub_time_kst = pub_time_utc.astimezone(KST)
+
+            if pub_time_kst < thirty_six_hours_ago:
+                continue
+
+            elapsed_hours = (now_kst - pub_time_kst).total_seconds() / 3600.0
+            elapsed_hours = max(elapsed_hours, 0.01)
+
+            views = int(stats.get("viewCount", 0))
+            views_per_hour = int(views / elapsed_hours)
+
+            if elapsed_hours < (1.0 / 60.0):
+                elapsed_str = "방금 전"
+            elif elapsed_hours < 1.0:
+                elapsed_str = f"{int(elapsed_hours * 60)}분 전"
+            else:
+                elapsed_str = f"{int(elapsed_hours)}시간 전"
+
+            title = snippet["title"]
+            
+            live_keywords = ["live", "라이브", "🔴", "12시에 만나요", "현장live", "뉴스공장 2026", "겸손은힘들다"]
+            is_live_video = any(kw in title.lower() for kw in live_keywords) or (duration_sec >= 5400 and "full" in title.lower())
+
+            video_list.append({
+                "채널명": channel_name,
+                "제목": title,
+                "프레임": classify_frame(title, duration_sec),
+                "조회수": views,
+                "시간당조회수": views_per_hour,
+                "경과시간_hours": elapsed_hours,
+                "경과시간": elapsed_str,
+                "게시일시_dt": pub_time_kst,
+                "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
+                "링크": f"https://youtu.be/{item['id']}",
+                "is_live": is_live_video
+            })
+
+    except Exception as e:
+        print(f"영상 상세 수집 오류 ({channel_name}): {e}")
 
     return video_list
 
@@ -303,16 +319,15 @@ def run_monitoring():
 
     for channel_name, channel_id in TARGET_CHANNELS.items():
         uploads_id = get_channel_uploads_playlist_id(youtube, channel_id)
-        if uploads_id:
-            videos = fetch_recent_videos(youtube, uploads_id, channel_name)
-            all_data.extend(videos)
+        videos = fetch_recent_videos(youtube, uploads_id, channel_name, channel_id)
+        all_data.extend(videos)
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     total_target_channels = len(TARGET_CHANNELS)
 
     if not all_data:
         send_telegram_message(
-            f"<b>[여권 성향 유튜브 모니터링 리포트]</b>\n({now_str} KST)\n\n"
+            f"<b>[여권 성향 유튜브 동향 리포트]</b>\n({now_str} KST)\n\n"
             f"최근 수집 범위 이내에 업로드된 일반 영상이 없습니다."
         )
         return
