@@ -40,7 +40,7 @@ TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길"
 
 FRAME_KEYWORDS = {
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "공천", "당권", "폭탄", "쉬쉬하던", "찌라시", "출당"],
-    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질"],
+    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질", "협박", "자업자득"],
     "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제", "투자자", "중복 상장", "주주환원"],
     "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
@@ -96,6 +96,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     
     video_items_raw = []
 
+    # 1. 기본 업로드 플레이리스트 수집
     if playlist_id:
         try:
             playlist_response = youtube.playlistItems().list(
@@ -107,6 +108,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
         except Exception as e:
             print(f"플레이리스트 수집 오류 ({channel_name}): {e}")
 
+    # 2. 일반 영상 검색 백업
     try:
         search_response = youtube.search().list(
             part="snippet",
@@ -123,10 +125,32 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 s_item["snippet"]["resourceId"] = {"videoId": v_id}
                 video_items_raw.append(s_item)
     except Exception as e:
-        print(f"Search API 백업 수집 오류 ({channel_name}): {e}")
+        print(f"Search API 일반 백업 수집 오류 ({channel_name}): {e}")
+
+    # 3. 라이브 스트리밍 VOD(eventType=completed) 전용 3차 백업 수집 (이동형TV 핵심 대응)
+    try:
+        search_response_live = youtube.search().list(
+            part="snippet",
+            channelId=channel_id,
+            order="date",
+            maxResults=10,
+            type="video",
+            eventType="completed"
+        ).execute()
+        
+        existing_ids = {item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})}
+        for s_item in search_response_live.get("items", []):
+            v_id = s_item["id"].get("videoId")
+            if v_id and v_id not in existing_ids:
+                s_item["snippet"]["resourceId"] = {"videoId": v_id}
+                video_items_raw.append(s_item)
+    except Exception as e:
+        print(f"Search API 라이브 VOD 백업 수집 오류 ({channel_name}): {e}")
 
     video_ids = list({item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})})
+    
     if not video_ids:
+        print(f"⚠️ [{channel_name}] 수집 대상 동영상 ID 0건 (채널 ID 또는 검색 파라미터 점검 필요)")
         return []
 
     chunk_size = 50
@@ -192,6 +216,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
         except Exception as e:
             print(f"영상 상세 수집 오류 ({channel_name}): {e}")
 
+    print(f"✅ [{channel_name}] 최종 수집 완료: 총 {len(video_list)}개 영상")
     return video_list
 
 
@@ -452,7 +477,6 @@ def run_monitoring():
             person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_total, f"• {p} : <b>{p_cnt}건</b> ({views_disp}){diff_str}"))
             person_summary_for_ai.append(f"- {p}: {p_cnt}건 (단독 {p_views_standalone:,}회 / 종합포함 {p_views_total:,}회)")
 
-    # 단독 영상 조회수 기준 정렬
     person_summary_lines.sort(key=lambda x: (x[2], x[3]), reverse=True)
     
     p_text_list = [item[4] for item in person_summary_lines]
@@ -460,7 +484,6 @@ def run_monitoring():
     person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
     trend_summary_str_for_ai = "\n".join(trend_summary_for_ai) if trend_summary_for_ai else "전일 데이터 대비 유의미한 변동 없음"
 
-    # 현재 프레임 및 인물 데이터 저장 (내일 실행 시 비교용)
     save_current_data({
         "timestamp": now_str,
         "persons": curr_persons_data,
