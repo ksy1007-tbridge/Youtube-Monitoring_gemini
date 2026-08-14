@@ -96,7 +96,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     
     video_items_raw = []
 
-    # 1. 기본 업로드 플레이리스트 수집 (있을 경우)
+    # 1. 기본 업로드 플레이리스트 수집
     if playlist_id:
         try:
             playlist_response = youtube.playlistItems().list(
@@ -108,7 +108,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
         except Exception as e:
             print(f"플레이리스트 수집 에러 ({channel_name}): {e}")
 
-    # 2. 업로드 재생목록 성공 여부와 완전 독립된 Search API 2중 수집 (이동형TV 미수집 근본 보정)
+    # 2. 플레이리스트 수집과 별개로 독립 구동되는 Search API 백업 수집
     try:
         search_response = youtube.search().list(
             part="snippet",
@@ -130,7 +130,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     video_ids = list({item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})})
     
     if not video_ids:
-        print(f"⚠️ [{channel_name}] 조회 결과 0건")
+        print(f"ℹ️ [{channel_name}] 조회 결과 0건 (최근 업로드 없음)")
         return []
 
     chunk_size = 50
@@ -271,7 +271,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         """
 
         primary_model = 'gemini-3-flash-preview'
-        fallback_model = 'gemini-2.5-flash'  # 최신 가용 엔드포인트로 보정하여 404 에러 방지
+        fallback_model = 'gemini-2.5-flash'  # 최신 모델로 엔드포인트 보정
 
         try:
             response = client.models.generate_content(
@@ -330,10 +330,20 @@ def run_monitoring():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     all_data = []
 
+    no_upload_channels = []  # 정상 수집되었으나 36시간 내 신규 영상 없음
+    failed_channels = []     # API 및 네트워크 오류로 인한 수집 실패
+
     for channel_name, channel_id in TARGET_CHANNELS.items():
-        uploads_id = get_channel_uploads_playlist_id(youtube, channel_id)
-        videos = fetch_recent_videos(youtube, uploads_id, channel_name, channel_id)
-        all_data.extend(videos)
+        try:
+            uploads_id = get_channel_uploads_playlist_id(youtube, channel_id)
+            videos = fetch_recent_videos(youtube, uploads_id, channel_name, channel_id)
+            if videos:
+                all_data.extend(videos)
+            else:
+                no_upload_channels.append(channel_name)
+        except Exception as e:
+            print(f"❌ [{channel_name}] 수집 중 예외 발생: {e}")
+            failed_channels.append(channel_name)
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
     total_target_channels = len(TARGET_CHANNELS)
@@ -361,13 +371,7 @@ def run_monitoring():
         df_vph = df.sort_values(by="시간당조회수", ascending=False).reset_index(drop=True)
 
     total_videos = len(df)
-    collected_channels_set = set(df["채널명"].unique())
-    all_channels_set = set(TARGET_CHANNELS.keys())
-    missing_channels = list(all_channels_set - collected_channels_set)
-    
-    collected_count = len(collected_channels_set)
-    missing_count = len(missing_channels)
-    missing_str = ", ".join(missing_channels) if missing_channels else "없음"
+    collected_count = total_target_channels - len(no_upload_channels) - len(failed_channels)
     hot_100k_count = len(df[df["조회수"] >= 100000])
 
     # ----- [1. 프레임별 건수 및 조회수 비중 집계 & 전일 대비 변동 계산] -----
@@ -477,9 +481,11 @@ def run_monitoring():
     msg += f"▪ 기준 시각: KST {now_str} (쇼츠 제외)\n\n"
     
     msg += f"<b>■ 모니터링 개요</b>\n"
-    msg += f"• 대상 채널: 총 {total_target_channels}개 (수집 {collected_count}개 / 미수집 {missing_count}개)\n"
-    if missing_channels:
-        msg += f"• 미수집 채널: [{missing_str}]\n"
+    msg += f"• 대상 채널: 총 {total_target_channels}개 (수집 {collected_count}개)\n"
+    if no_upload_channels:
+        msg += f"• 신규 업로드 없음: [{', '.join(no_upload_channels)}]\n"
+    if failed_channels:
+        msg += f"• 수집 실패(API 오류): [{', '.join(failed_channels)}]\n"
     msg += f"• 수집 영상: 총 {total_videos}개 (10만+ 대박 영상: {hot_100k_count}개)\n\n"
 
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
