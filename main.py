@@ -96,7 +96,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     
     video_items_raw = []
 
-    # 1. 기본 업로드 플레이리스트 수집
     if playlist_id:
         try:
             playlist_response = youtube.playlistItems().list(
@@ -108,7 +107,6 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
         except Exception as e:
             print(f"플레이리스트 수집 에러 ({channel_name}): {e}")
 
-    # 2. 플레이리스트 수집과 별개로 독립 구동되는 Search API 백업 수집
     try:
         search_response = youtube.search().list(
             part="snippet",
@@ -229,7 +227,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
         prompt = f"""
         당신은 수치 데이터와 실시간 프레임 전환을 정교하게 분석하는 수석 데이터 분석가입니다.
-        과거 어제의 분석 프레임이나 과거 특정 지나간 이슈를 재활용하지 말고, 오직 오늘 수집된 데이터와 전일 대비 증감 지표만을 근거로 분석하세요.
+        과거 어제의 분석 프레임이나 지나간 이슈를 재활용하지 말고, 오직 오늘 수집된 데이터와 전일 대비 증감 지표만을 근거로 분석하세요.
 
         [오늘의 상위 영상 데이터 (누적 조회수 TOP 10)]
         {top_videos}
@@ -238,40 +236,41 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         {frame_stat_summary}
         {frame_trend_str}
 
-        [주요 인물 언급 현황 (단독 영상 기준 및 종합방송 포함)]
+        [주요 인물 언급 현황 (전일 단독 vs 금일 단독 조회수 비교 포함)]
         {person_summary_str}
 
         [전일 대비 주요 지표 증감 추세]
         {trend_summary_str}
 
         [엄격한 작성 지침 - 반드시 준수]
-        1. [과거 소재 재활용 및 상투적 문구 절대 금지]:
-           - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 정형화된 표현을 절대 쓰지 마세요.
-           - 오늘 데이터에 직접 등장하지 않는 과거 지나간 이슈(예: 노무현 계승, 정몽준, 호남 비하 등)를 상상하거나 재탕하지 마세요.
-        2. [실제 오늘의 구조적 변화 & 신규 사건 포착]:
-           - 주요 채널(뉴스공장 등)의 양자 구도 공식화나 출연진 편성 전환, 홍사훈쑈 등의 방송 형식을 포착하세요.
-           - 법적 분쟁(고소, 고소전), 신규 폭로/공천 갈등, 파문 등 오늘 상위 영상 제목에 실제로 나타난 신규 대립 사건을 서술하세요.
-           - 프레임 비중의 급격한 축소/확대(예: 민생/경제 프레임의 급감, 경선/인물 프레임 상승 등)를 핵심 변화로 지목하세요.
-        3. [호칭 엄수]: 이재명은 현직 대한민국 대통령입니다. 지칭 시 반드시 '이재명 대통령'으로만 표기하세요.
-        4. ['종합방송'/'기타' 단정 금지]: '종합방송'(판정 불가)이나 '기타' 프레임의 내부 내용을 자의적으로 단정하지 마세요.
+        1. [인물 수치 변동 최우선 포착]:
+           - 인물 현황의 전일 대비 수치 변화(예: 특정 최고위원 후보의 단독 조회수 급증, 당대표 후보의 조회수 정체/급감 등)를 1순위 핵심 기류로 서술하세요.
+           - 특히 투표 전날 당대표 후보가 조용해지고 최고위원 후보가 전면에 부상하는 등 구도적 변화를 짚어내야 합니다.
+        2. [프레임 착시 보정]:
+           - '당내/인물' 프레임의 대다수는 전당대회(최고위원/당대표 경선) 관련 콘텐츠입니다. '전당대회/경선' 단일 프레임 수치만 보고 전당대회 관심도가 낮다고 판단하지 마시고, '당내/인물'과의 결합 비중을 고려해 분석하세요.
+        3. [자의적 해석 및 추측성 단정 절대 금지]:
+           - 채널의 '특화 편성', '편성 전략' 등 방송사의 내면 의도를 단정하지 마세요 (예: 광복절 전날 역사 소재는 단순 시의성 현상임).
+           - 종합방송 비중(40% 이상)이 높은 상태에서 "시청층 관심사 다변화" 등으로 포장하거나 내용을 자의적으로 단정하지 마세요.
+        4. [과거 소재 재활용 및 상투적 문구 금지]:
+           - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
+           - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
         5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요.
-        6. [금지어 및 이모티콘]: "확보", "우세" 및 이모티콘 사용 금지.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (오늘 상위 영상의 신규 대립 사건, 법적 고소전/편성 전환, 프레임 비중 변화 등 오늘 실제 벌어진 구도 변화를 2문장으로 요약)
+        - (전일 대비 인물별 단독 조회수 급증/급감 및 전당대회 투표 직전 구도 변화, 프레임 비중 이동을 2문장으로 요약)
 
         2. 주요 언급 키워드
         - (오늘 데이터 기반 주요 인물 및 신규 핵심 이슈 키워드 8~10개)
 
         3. 모니터링 관측 평가
-        - (전일 대비 프레임 이동 및 대립 격화 수치에 기반한 분석가 관점의 총평 1문장)
+        - (전일 대비 프레임 이동 및 인물 관심도 격차에 기반한 분석가 관점의 총평 1문장)
         """
 
         primary_model = 'gemini-3-flash-preview'
-        fallback_model = 'gemini-2.5-flash'  # 최신 모델로 엔드포인트 보정
+        fallback_model = 'gemini-2.5-flash'
 
         try:
             response = client.models.generate_content(
@@ -330,8 +329,8 @@ def run_monitoring():
     youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
     all_data = []
 
-    no_upload_channels = []  # 정상 수집되었으나 36시간 내 신규 영상 없음
-    failed_channels = []     # API 및 네트워크 오류로 인한 수집 실패
+    no_upload_channels = []
+    failed_channels = []
 
     for channel_name, channel_id in TARGET_CHANNELS.items():
         try:
@@ -416,7 +415,7 @@ def run_monitoring():
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
     frame_trend_str_for_ai = "\n".join(frame_trend_for_ai) if frame_trend_for_ai else "전일 프레임 비중 비교 데이터 없음"
 
-    # ----- [2. 주요 인물별 언급 및 종합방송 오염 분리 집계] -----
+    # ----- [2. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
     prev_persons = prev_data.get("persons", {}) if prev_data else {}
 
     curr_persons_data = {}
@@ -442,24 +441,30 @@ def run_monitoring():
         }
 
         if p_cnt > 0:
+            prev_v = 0
             diff_str = ""
             if p in prev_persons:
                 prev_v = prev_persons[p].get("views_standalone", prev_persons[p].get("views", 0))
                 if prev_v > 0:
                     pct = round(((p_views_standalone - prev_v) / prev_v) * 100, 1)
                     sign = "+" if pct >= 0 else ""
-                    diff_str = f" (전일 대비 {sign}{pct}%)"
+                    diff_str = f" | 전일 {prev_v:,}회 -> {sign}{pct}%"
                     trend_summary_for_ai.append(f"- {p}: 전일 단독 {prev_v:,}회 -> 금일 단독 {p_views_standalone:,}회 ({sign}{pct}%)")
+                else:
+                    diff_str = " | 전일 0회"
+                    trend_summary_for_ai.append(f"- {p}: 전일 단독 0회 -> 금일 단독 {p_views_standalone:,}회 (신규 진입/급증)")
 
             if len(sel_omnibus) > 0 and len(sel_standalone) == 0:
                 views_disp = f"단독 0회 (종합방송 {len(sel_omnibus)}건 포함 {p_views_total:,}회)"
             elif len(sel_omnibus) > 0:
                 views_disp = f"단독 {p_views_standalone:,}회 (종합 포함 {p_views_total:,}회)"
             else:
-                views_disp = f"총 {p_views_standalone:,}회"
+                views_disp = f"단독 {p_views_standalone:,}회"
 
-            person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_total, f"• {p} : <b>{p_cnt}건</b> ({views_disp}){diff_str}"))
-            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (단독 {p_views_standalone:,}회 / 종합포함 {p_views_total:,}회)")
+            # 어제 수치와 오늘 수치를 나란히 표시하여 급등/급락 직관화
+            line_text = f"• {p} : <b>{p_cnt}건</b> ({views_disp}{diff_str})"
+            person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_total, line_text))
+            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 종합포함 {p_views_total:,}회)")
 
     person_summary_lines.sort(key=lambda x: (x[2], x[3]), reverse=True)
     
