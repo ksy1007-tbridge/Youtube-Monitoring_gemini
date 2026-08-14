@@ -85,7 +85,7 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
         if items:
             return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
     except Exception as e:
-        print(f"채널 ID({channel_id}) 조회 실패: {e}")
+        print(f"채널 ID({channel_id}) 재생목록 조회 실패: {e}")
     return None
 
 
@@ -96,7 +96,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
     
     video_items_raw = []
 
-    # 1. 기본 업로드 플레이리스트 수집
+    # 1. 기본 업로드 플레이리스트 수집 (있을 경우)
     if playlist_id:
         try:
             playlist_response = youtube.playlistItems().list(
@@ -106,15 +106,15 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
             ).execute()
             video_items_raw.extend(playlist_response.get("items", []))
         except Exception as e:
-            print(f"플레이리스트 수집 오류 ({channel_name}): {e}")
+            print(f"플레이리스트 수집 에러 ({channel_name}): {e}")
 
-    # 2. 일반 영상 검색 백업
+    # 2. 업로드 재생목록 성공 여부와 완전 독립된 Search API 2중 수집 (이동형TV 미수집 근본 보정)
     try:
         search_response = youtube.search().list(
             part="snippet",
             channelId=channel_id,
             order="date",
-            maxResults=15,
+            maxResults=25,
             type="video"
         ).execute()
         
@@ -125,32 +125,12 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 s_item["snippet"]["resourceId"] = {"videoId": v_id}
                 video_items_raw.append(s_item)
     except Exception as e:
-        print(f"Search API 일반 백업 수집 오류 ({channel_name}): {e}")
-
-    # 3. 라이브 스트리밍 VOD(eventType=completed) 전용 3차 백업 수집 (이동형TV 핵심 대응)
-    try:
-        search_response_live = youtube.search().list(
-            part="snippet",
-            channelId=channel_id,
-            order="date",
-            maxResults=10,
-            type="video",
-            eventType="completed"
-        ).execute()
-        
-        existing_ids = {item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})}
-        for s_item in search_response_live.get("items", []):
-            v_id = s_item["id"].get("videoId")
-            if v_id and v_id not in existing_ids:
-                s_item["snippet"]["resourceId"] = {"videoId": v_id}
-                video_items_raw.append(s_item)
-    except Exception as e:
-        print(f"Search API 라이브 VOD 백업 수집 오류 ({channel_name}): {e}")
+        print(f"Search API 수집 에러 ({channel_name}): {e}")
 
     video_ids = list({item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})})
     
     if not video_ids:
-        print(f"⚠️ [{channel_name}] 수집 대상 동영상 ID 0건 (채널 ID 또는 검색 파라미터 점검 필요)")
+        print(f"⚠️ [{channel_name}] 조회 결과 0건")
         return []
 
     chunk_size = 50
@@ -214,9 +194,9 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 })
 
         except Exception as e:
-            print(f"영상 상세 수집 오류 ({channel_name}): {e}")
+            print(f"영상 상세 수집 에러 ({channel_name}): {e}")
 
-    print(f"✅ [{channel_name}] 최종 수집 완료: 총 {len(video_list)}개 영상")
+    print(f"✅ [{channel_name}] 최종 수집: 총 {len(video_list)}개 영상")
     return video_list
 
 
@@ -291,7 +271,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         """
 
         primary_model = 'gemini-3-flash-preview'
-        fallback_model = 'gemini-2.0-flash'
+        fallback_model = 'gemini-2.5-flash'  # 최신 가용 엔드포인트로 보정하여 404 에러 방지
 
         try:
             response = client.models.generate_content(
