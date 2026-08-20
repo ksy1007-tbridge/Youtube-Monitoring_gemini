@@ -270,10 +270,10 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         """
 
         # ---------------------------------------------------------
-        # google-genai SDK v1beta 표준 엔드포인트 적용
+        # google-genai SDK v1beta 2026 표준 최신 엔드포인트
         # ---------------------------------------------------------
-        primary_model = 'gemini-2.0-flash'
-        fallback_model = 'gemini-2.0-flash-lite'
+        primary_model = 'gemini-3.5-flash-lite'
+        fallback_model = 'gemini-3.1-flash-lite'
 
         try:
             response = client.models.generate_content(
@@ -520,7 +520,7 @@ def run_monitoring():
         views = row["조회수"]
         safe_title = html.escape(str(row["제목"]))
         safe_channel = html.escape(str(channel))
-        frame_tag = f"[{row['frame']}] " if 'frame' in row and row['frame'] != "기타" else (f"[{row['프레임']}] " if row['프레임'] != "기타" else "")
+        frame_tag = f"[{row['프레임']}] " if row['프레임'] != "기타" else ""
 
         if is_stabilized_vph(row):
             vph_str = f"시간당 +{row['시간당조회수']:,}회"
