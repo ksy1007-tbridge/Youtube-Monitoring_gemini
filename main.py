@@ -36,11 +36,11 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
+# ---------------------------------------------------------
+# [2단계 수정] 핵심 스피커(김어준, 유시민, 백낙청) 재포함
+# ---------------------------------------------------------
+TRACK_PERSONS = ["정청래", "김민석", "김어준", "유시민", "이재명", "최민희", "백낙청", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
-# ---------------------------------------------------------
-# [1단계 신규] 주요 이슈 키워드 그룹 및 집계 로직
-# ---------------------------------------------------------
 ISSUE_KEYWORDS = {
     "여론조사 조작 공방": ["여론조사", "조작", "공작", "사법처리", "1인 84표", "1인 80표", "여조"],
     "유시민 발언/동향": ["유시민"],
@@ -89,10 +89,25 @@ def classify_frame(title: str, duration_sec: int) -> str:
     return "기타"
 
 
+def clean_title_for_person_search(title: str, channel_name: str) -> str:
+    """
+    [2단계 신규] 제목 내 고정 채널명 제거로 김어준/김용민 등의 중복 카운팅 노이즈 방지
+    """
+    cleaned = title
+    # 채널명 및 대표 타이틀 오염 문자열 제거
+    noise_patterns = [
+        "김어준의 겸손은힘들다 뉴스공장",
+        "김어준의 겸손은힘들다",
+        "겸손은힘들다",
+        "김용민 브리핑",
+        channel_name
+    ]
+    for pattern in noise_patterns:
+        cleaned = cleaned.replace(pattern, "")
+    return cleaned
+
+
 def extract_major_issues(df):
-    """
-    수집된 영상 제목을 분석하여 [건수 | 언급 채널 수 | 총 조회수]를 집계합니다.
-    """
     issue_results = []
 
     for issue_name, keywords in ISSUE_KEYWORDS.items():
@@ -112,7 +127,6 @@ def extract_major_issues(df):
 
     df_issues = pd.DataFrame(issue_results)
     if not df_issues.empty:
-        # 언급 채널 수(확산도) 내림차순 -> 조회수 내림차순 정렬
         df_issues = df_issues.sort_values(by=["채널수", "조회수"], ascending=[False, False]).reset_index(drop=True)
     
     return df_issues
@@ -220,6 +234,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 video_list.append({
                     "채널명": channel_name,
                     "제목": title,
+                    "제목_정제": clean_title_for_person_search(title, channel_name),
                     "프레임": classify_frame(title, duration_sec),
                     "조회수": views,
                     "시간당조회수": views_per_hour,
@@ -289,14 +304,14 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         1. [주요 확산 이슈 및 인물 수치 최우선 분석]:
            - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 여론조사 조작 공방 등) 및 인물별 단독 조회수 변화를 1순위 핵심 기류로 필수 반영하세요.
         2. [프레임 착시 보정]:
-           - '당내/인물' 프레임의 대다수는 전당대회(최고위원/당대표 경선 및 사후 여파) 관련 콘텐츠입니다. 두 프레임을 결합하여 여론 집결도를 분석하세요.
+           - '당내/인물' 프레임의 대다수는 전당대회 사후 여파 및 인물 갈등 관련 콘텐츠입니다. 결합 비중을 통해 여론 집결도를 분석하세요.
         3. [자가 단정 및 추측성 서술 절대 금지]:
            - 채널의 '특화 편성', '편성 전략' 등 방송사의 내면 의도를 단정하지 마세요.
-           - 종합방송 비중(30% 이상)이 높은 상태에서 내용이나 시청층 심리를 자의적으로 해석하지 마세요.
+           - 종합방송 비중이 높은 상태에서 내용이나 시청층 심리를 자의적으로 해석하지 마세요.
         4. [과거 소재 재활용 및 상투적 문구 금지]:
            - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
-        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권 인물이나 단발성 가십성 인물 제외)
+        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권 인물이나 단순 축구/가십성 인물 제외)
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
@@ -466,7 +481,7 @@ def run_monitoring():
         )
     issue_summary_text = "\n".join(issue_summary_lines) if issue_summary_lines else "• 특이 이슈 없음"
 
-    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
+    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계 (2단계: 정제 제목 검색)] -----
     prev_persons = prev_data.get("persons", {}) if prev_data else {}
 
     curr_persons_data = {}
@@ -475,7 +490,8 @@ def run_monitoring():
     trend_summary_for_ai = []
 
     for p in TRACK_PERSONS:
-        sel = df[df["제목"].str.contains(p, regex=False)]
+        # 제목 정제(오염 제거) 데이터 기준 인물 언급 필터링
+        sel = df[df["제목_정제"].str.contains(p, regex=False)]
         p_cnt = len(sel)
 
         sel_standalone = sel[sel["프레임"] != "종합방송"]
@@ -549,7 +565,6 @@ def run_monitoring():
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
     msg += f"{frame_summary_text}\n\n"
 
-    # [신규 신설] 주요 이슈 언급 표 출력
     msg += f"<b>■ 주요 이슈 언급 (건수 | 채널 수 | 조회수)</b>\n"
     msg += f"{issue_summary_text}\n\n"
 
