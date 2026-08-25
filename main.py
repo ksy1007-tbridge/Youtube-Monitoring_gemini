@@ -38,6 +38,17 @@ TARGET_CHANNELS = {
 
 TRACK_PERSONS = ["정청래", "김민석", "최민희", "이재명", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
+# ---------------------------------------------------------
+# [1단계 신규] 주요 이슈 키워드 그룹 및 집계 로직
+# ---------------------------------------------------------
+ISSUE_KEYWORDS = {
+    "여론조사 조작 공방": ["여론조사", "조작", "공작", "사법처리", "1인 84표", "1인 80표", "여조"],
+    "유시민 발언/동향": ["유시민"],
+    "백낙청 일갈/메시지": ["백낙청"],
+    "조희대 탄핵/사법부": ["조희대", "대법원장"],
+    "노웅래 무죄/검찰": ["노웅래"],
+}
+
 FRAME_KEYWORDS = {
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "공천", "당권", "폭탄", "쉬쉬하던", "찌라시", "출당"],
     "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질", "협박", "자업자득"],
@@ -76,6 +87,35 @@ def classify_frame(title: str, duration_sec: int) -> str:
             if kw.lower() in title_lower:
                 return frame
     return "기타"
+
+
+def extract_major_issues(df):
+    """
+    수집된 영상 제목을 분석하여 [건수 | 언급 채널 수 | 총 조회수]를 집계합니다.
+    """
+    issue_results = []
+
+    for issue_name, keywords in ISSUE_KEYWORDS.items():
+        pattern = "|".join(keywords)
+        sel = df[df["제목"].str.contains(pattern, regex=True, na=False)]
+        
+        cnt = len(sel)
+        if cnt > 0:
+            channel_cnt = sel["채널명"].nunique()
+            total_views = int(sel["조회수"].sum())
+            issue_results.append({
+                "이슈명": issue_name,
+                "건수": cnt,
+                "채널수": channel_cnt,
+                "조회수": total_views
+            })
+
+    df_issues = pd.DataFrame(issue_results)
+    if not df_issues.empty:
+        # 언급 채널 수(확산도) 내림차순 -> 조회수 내림차순 정렬
+        df_issues = df_issues.sort_values(by=["채널수", "조회수"], ascending=[False, False]).reset_index(drop=True)
+    
+    return df_issues
 
 
 def get_channel_uploads_playlist_id(youtube, channel_id):
@@ -216,7 +256,7 @@ def save_current_data(data):
         print(f"현재 데이터 저장 실패: {e}")
 
 
-def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str):
+def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str):
     if not GEMINI_API_KEY:
         return "[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]"
 
@@ -232,6 +272,9 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         [오늘의 상위 영상 데이터 (누적 조회수 TOP 10)]
         {top_videos}
 
+        [오늘의 주요 확산 이슈 현황 (건수 | 채널 수 | 총 조회수)]
+        {issue_summary_str}
+
         [오늘의 프레임별 현황 및 전일 대비 비중 변화]
         {frame_stat_summary}
         {frame_trend_str}
@@ -243,9 +286,8 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         {trend_summary_str}
 
         [엄격한 작성 지침 - 반드시 준수]
-        1. [인물 수치 역전 및 급등 최우선 분석]:
-           - 전일 대비 인물별 단독 조회수의 역전 현상 및 수치 변동을 1순위 핵심 기류로 필수 반영하세요.
-           - 전당대회 결과 발표 직후 당선자/낙선자 및 인물별 시청자 관심도 이동을 분명히 서술하세요.
+        1. [주요 확산 이슈 및 인물 수치 최우선 분석]:
+           - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 여론조사 조작 공방 등) 및 인물별 단독 조회수 변화를 1순위 핵심 기류로 필수 반영하세요.
         2. [프레임 착시 보정]:
            - '당내/인물' 프레임의 대다수는 전당대회(최고위원/당대표 경선 및 사후 여파) 관련 콘텐츠입니다. 두 프레임을 결합하여 여론 집결도를 분석하세요.
         3. [자가 단정 및 추측성 서술 절대 금지]:
@@ -254,24 +296,21 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         4. [과거 소재 재활용 및 상투적 문구 금지]:
            - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
-        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요.
+        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권 인물이나 단발성 가십성 인물 제외)
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
 
         1. 핵심 기류
-        - (전일 대비 인물별 단독 조회수 역전/급등 및 프레임 결합 비중을 통한 핵심 구도 변화를 2문장으로 요약)
+        - (주요 확산 이슈의 채널 확산 양상 및 인물별 단독 조회수 구도를 2문장으로 요약)
 
         2. 주요 언급 키워드
         - (오늘 데이터 기반 주요 인물 및 신규 핵심 이슈 키워드 8~10개)
 
         3. 모니터링 관측 평가
-        - (전일 대비 인물 관심도 이동 및 프레임 변화에 기반한 분석가 관점의 총평 1문장)
+        - (채널 폭 확산도 및 인물 관심도 이동에 기반한 분석가 관점의 총평 1문장)
         """
 
-        # ---------------------------------------------------------
-        # google-genai SDK v1beta 2026 표준 최신 엔드포인트
-        # ---------------------------------------------------------
         primary_model = 'gemini-3.5-flash-lite'
         fallback_model = 'gemini-3.1-flash-lite'
 
@@ -418,7 +457,16 @@ def run_monitoring():
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
     frame_trend_str_for_ai = "\n".join(frame_trend_for_ai) if frame_trend_for_ai else "전일 프레임 비중 비교 데이터 없음"
 
-    # ----- [2. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
+    # ----- [2. 주요 확산 이슈 집계] -----
+    df_issues = extract_major_issues(df)
+    issue_summary_lines = []
+    for _, row in df_issues.iterrows():
+        issue_summary_lines.append(
+            f"• {row['이슈명']} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회"
+        )
+    issue_summary_text = "\n".join(issue_summary_lines) if issue_summary_lines else "• 특이 이슈 없음"
+
+    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
     prev_persons = prev_data.get("persons", {}) if prev_data else {}
 
     curr_persons_data = {}
@@ -481,7 +529,10 @@ def run_monitoring():
         "frames": curr_frames_data
     })
 
-    ai_insight_text = generate_ai_insight(df_top, frame_stat_summary_str, person_summary_str_for_ai, trend_summary_str_for_ai, frame_trend_str_for_ai)
+    ai_insight_text = generate_ai_insight(
+        df_top, frame_stat_summary_str, person_summary_str_for_ai, 
+        trend_summary_str_for_ai, frame_trend_str_for_ai, issue_summary_text
+    )
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
@@ -497,6 +548,10 @@ def run_monitoring():
 
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
     msg += f"{frame_summary_text}\n\n"
+
+    # [신규 신설] 주요 이슈 언급 표 출력
+    msg += f"<b>■ 주요 이슈 언급 (건수 | 채널 수 | 조회수)</b>\n"
+    msg += f"{issue_summary_text}\n\n"
 
     msg += f"<b>■ 주요 인물 언급 현황 (건수 | 조회수)</b>\n"
     msg += f"{person_summary_text}\n\n"
