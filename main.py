@@ -36,17 +36,20 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-# ---------------------------------------------------------
-# [2단계 수정] 핵심 스피커(김어준, 유시민, 백낙청) 재포함
-# ---------------------------------------------------------
 TRACK_PERSONS = ["정청래", "김민석", "김어준", "유시민", "이재명", "최민희", "백낙청", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
 
+# ---------------------------------------------------------
+# [이슈 키워드 그룹 재정의 - 오탐 제거 및 구조화]
+# ---------------------------------------------------------
 ISSUE_KEYWORDS = {
-    "여론조사 조작 공방": ["여론조사", "조작", "공작", "사법처리", "1인 84표", "1인 80표", "여조"],
-    "유시민 발언/동향": ["유시민"],
-    "백낙청 일갈/메시지": ["백낙청"],
+    "여론조사 조작 공방": [
+        "여론조사 조작", "여조 조작", "여조 공작", "조작 폭로", "조작 방송",
+        "허위 응답", "중복 투표", "1인 84표", "1인 80표", "강진구", "이상호 기자"
+    ],
+    "김어준 논란": ["김어준"],  # 정제 제목(제목_정제) 기준 매칭
+    "당내 계파 갈등": ["친청", "친명", "당내 반란", "계파", "지도부 갈등", "최민희", "탈당"],
     "조희대 탄핵/사법부": ["조희대", "대법원장"],
-    "노웅래 무죄/검찰": ["노웅래"],
+    "부동산·증시": ["부동산", "세제", "코스피", "삼성전자", "주주환원", "집값"]
 }
 
 FRAME_KEYWORDS = {
@@ -90,11 +93,7 @@ def classify_frame(title: str, duration_sec: int) -> str:
 
 
 def clean_title_for_person_search(title: str, channel_name: str) -> str:
-    """
-    [2단계 신규] 제목 내 고정 채널명 제거로 김어준/김용민 등의 중복 카운팅 노이즈 방지
-    """
     cleaned = title
-    # 채널명 및 대표 타이틀 오염 문자열 제거
     noise_patterns = [
         "김어준의 겸손은힘들다 뉴스공장",
         "김어준의 겸손은힘들다",
@@ -108,28 +107,43 @@ def clean_title_for_person_search(title: str, channel_name: str) -> str:
 
 
 def extract_major_issues(df):
+    """
+    주요 이슈 집계 + MBC(레거시) 확산 포함 여부 체크 + 미분류 상위 5 추출
+    """
     issue_results = []
+    matched_indices = set()
 
     for issue_name, keywords in ISSUE_KEYWORDS.items():
         pattern = "|".join(keywords)
-        sel = df[df["제목"].str.contains(pattern, regex=True, na=False)]
+        # 김어준 논란 등 스피커 이슈는 제목_정제 기준 매칭
+        search_target = df["제목_정제"] if issue_name == "김어준 논란" else df["제목"]
+        sel = df[search_target.str.contains(pattern, regex=True, na=False)]
         
         cnt = len(sel)
         if cnt > 0:
+            matched_indices.update(sel.index)
             channel_cnt = sel["채널명"].nunique()
             total_views = int(sel["조회수"].sum())
+            has_mbc = "MBC 라디오 시사" in sel["채널명"].values
+            mbc_tag = " [MBC 포함]" if has_mbc else " [진영 내부]"
+
             issue_results.append({
                 "이슈명": issue_name,
                 "건수": cnt,
                 "채널수": channel_cnt,
-                "조회수": total_views
+                "조회수": total_views,
+                "mbc_tag": mbc_tag
             })
 
     df_issues = pd.DataFrame(issue_results)
     if not df_issues.empty:
         df_issues = df_issues.sort_values(by=["채널수", "조회수"], ascending=[False, False]).reset_index(drop=True)
-    
-    return df_issues
+
+    # 이슈 미분류 상위 5개 영상 추출 (새 쟁점 후보)
+    unclassified_df = df.drop(index=list(matched_indices), errors="ignore")
+    df_unclassified_top5 = unclassified_df.sort_values(by="조회수", ascending=False).head(5)
+
+    return df_issues, df_unclassified_top5
 
 
 def get_channel_uploads_playlist_id(youtube, channel_id):
@@ -271,7 +285,7 @@ def save_current_data(data):
         print(f"현재 데이터 저장 실패: {e}")
 
 
-def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str):
+def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str, unclassified_summary_str):
     if not GEMINI_API_KEY:
         return "[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]"
 
@@ -287,8 +301,11 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         [오늘의 상위 영상 데이터 (누적 조회수 TOP 10)]
         {top_videos}
 
-        [오늘의 주요 확산 이슈 현황 (건수 | 채널 수 | 총 조회수)]
+        [오늘의 주요 확산 이슈 현황 (건수 | 채널 수 | 총 조회수 | MBC포함여부)]
         {issue_summary_str}
+
+        [이슈 미분류 상위 영상 (새 쟁점 후보)]
+        {unclassified_summary_str}
 
         [오늘의 프레임별 현황 및 전일 대비 비중 변화]
         {frame_stat_summary}
@@ -302,7 +319,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
         [엄격한 작성 지침 - 반드시 준수]
         1. [주요 확산 이슈 및 인물 수치 최우선 분석]:
-           - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 여론조사 조작 공방 등) 및 인물별 단독 조회수 변화를 1순위 핵심 기류로 필수 반영하세요.
+           - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 여론조사 조작 공방, 계파 갈등 등) 및 레거시(MBC) 확장 여부를 1순위 핵심 기류로 필수 반영하세요.
         2. [프레임 착시 보정]:
            - '당내/인물' 프레임의 대다수는 전당대회 사후 여파 및 인물 갈등 관련 콘텐츠입니다. 결합 비중을 통해 여론 집결도를 분석하세요.
         3. [자가 단정 및 추측성 서술 절대 금지]:
@@ -472,16 +489,25 @@ def run_monitoring():
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
     frame_trend_str_for_ai = "\n".join(frame_trend_for_ai) if frame_trend_for_ai else "전일 프레임 비중 비교 데이터 없음"
 
-    # ----- [2. 주요 확산 이슈 집계] -----
-    df_issues = extract_major_issues(df)
+    # ----- [2. 주요 확산 이슈 집계 및 미분류 상위 5 추출] -----
+    df_issues, df_unclassified_top5 = extract_major_issues(df)
+    
     issue_summary_lines = []
     for _, row in df_issues.iterrows():
         issue_summary_lines.append(
-            f"• {row['이슈명']} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회"
+            f"• {row['이슈명']} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}"
         )
     issue_summary_text = "\n".join(issue_summary_lines) if issue_summary_lines else "• 특이 이슈 없음"
 
-    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계 (2단계: 정제 제목 검색)] -----
+    unclassified_summary_lines = []
+    for _, row in df_unclassified_top5.iterrows():
+        safe_t = html.escape(str(row['제목']))
+        unclassified_summary_lines.append(
+            f"• {row['조회수']:,}회 {safe_t} ([{row['채널명']}])"
+        )
+    unclassified_summary_text = "\n".join(unclassified_summary_lines) if unclassified_summary_lines else "• 미분류 상위 영상 없음"
+
+    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
     prev_persons = prev_data.get("persons", {}) if prev_data else {}
 
     curr_persons_data = {}
@@ -490,7 +516,6 @@ def run_monitoring():
     trend_summary_for_ai = []
 
     for p in TRACK_PERSONS:
-        # 제목 정제(오염 제거) 데이터 기준 인물 언급 필터링
         sel = df[df["제목_정제"].str.contains(p, regex=False)]
         p_cnt = len(sel)
 
@@ -547,7 +572,8 @@ def run_monitoring():
 
     ai_insight_text = generate_ai_insight(
         df_top, frame_stat_summary_str, person_summary_str_for_ai, 
-        trend_summary_str_for_ai, frame_trend_str_for_ai, issue_summary_text
+        trend_summary_str_for_ai, frame_trend_str_for_ai, 
+        issue_summary_text, unclassified_summary_text
     )
 
     # ----- [보고서 메시지 작성] -----
@@ -567,6 +593,9 @@ def run_monitoring():
 
     msg += f"<b>■ 주요 이슈 언급 (건수 | 채널 수 | 조회수)</b>\n"
     msg += f"{issue_summary_text}\n\n"
+
+    msg += f"<b>■ 이슈 미분류 상위 5 (새 쟁점 후보)</b>\n"
+    msg += f"{unclassified_summary_text}\n\n"
 
     msg += f"<b>■ 주요 인물 언급 현황 (건수 | 조회수)</b>\n"
     msg += f"{person_summary_text}\n\n"
