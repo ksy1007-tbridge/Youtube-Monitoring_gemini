@@ -2,8 +2,8 @@ name: YouTube Daily Monitor
 
 on:
   schedule:
-    # UTC 기준 매일 00:00, 09:00 (한국 시간 KST 매일 09:00, 18:00)
-    - cron: '0 0,9 * * *'
+    # KST 기준 매일 12:17 실행 (UTC 기준 03:17 / 대기열 피하기용 17분 설정)
+    - cron: '17 3 * * *'
   workflow_dispatch:
 
 jobs:
