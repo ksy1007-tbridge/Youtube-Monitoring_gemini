@@ -109,16 +109,32 @@ def clean_title_for_person_search(title: str, channel_name: str) -> str:
 def extract_major_issues(df):
     """
     주요 이슈 집계 + MBC(레거시) 확산 포함 여부 체크 + 미분류 상위 5 추출
+
+    [수정 이력]
+    종합방송(프레임=="종합방송") 행은 이슈 매칭 전체에서 제외합니다.
+    이유: 본방송 제목의 코너·게스트 대괄호에는 여러 인물명이 나열되는데
+    ("...한민수X신현영X정혜영...", "...최민희X황희두..." 등), 제목_정제는
+    채널 브랜딩 문구만 지우고 이 대괄호 내용은 그대로 남깁니다.
+    그 결과 예컨대 "당내 계파 갈등"(키워드 "최민희")이나 "부동산·증시"
+    (키워드 "부동산"·"코스피") 같은 이슈가, 실제로는 그 사안을 다루지
+    않은 본방송의 조회수 100만+를 통째로 흡수하는 오탐이 발생했습니다.
+    ("김어준 논란"만 제목_정제로 우회 방지하던 것을 전체로 일반화합니다.)
+
+    본방송(종합방송)에서 제외된 행은 기존과 동일하게 '미분류 상위 5'
+    (새 쟁점 후보) 풀에 그대로 남아, 사람이 직접 훑어볼 수 있습니다.
     """
     issue_results = []
     matched_indices = set()
+    issue_debug = {}  # 검증용: 이슈별 매칭 제목 상위 몇 개 (텔레그램에는 안 보냄, 로그에만 출력)
+
+    # 종합방송은 코너 혼재라 어떤 이슈에도 귀속시킬 수 없다 — 이슈 매칭 자체에서 제외
+    df_matchable = df[df["프레임"] != "종합방송"]
 
     for issue_name, keywords in ISSUE_KEYWORDS.items():
         pattern = "|".join(keywords)
-        # 김어준 논란 등 스피커 이슈는 제목_정제 기준 매칭
-        search_target = df["제목_정제"] if issue_name == "김어준 논란" else df["제목"]
-        sel = df[search_target.str.contains(pattern, regex=True, na=False)]
-        
+        # 채널 브랜딩 문구 제거한 정제 제목으로 통일 매칭 (부작용 없음, 안전망 강화)
+        sel = df_matchable[df_matchable["제목_정제"].str.contains(pattern, regex=True, na=False)]
+
         cnt = len(sel)
         if cnt > 0:
             matched_indices.update(sel.index)
@@ -135,15 +151,43 @@ def extract_major_issues(df):
                 "mbc_tag": mbc_tag
             })
 
+            # 검증용 로그: 조회수 상위 5개 매칭 제목만 남긴다
+            top5 = sel.sort_values(by="조회수", ascending=False).head(5)
+            issue_debug[issue_name] = [
+                {"채널": r["채널명"], "조회수": int(r["조회수"]), "제목": r["제목"]}
+                for _, r in top5.iterrows()
+            ]
+
     df_issues = pd.DataFrame(issue_results)
     if not df_issues.empty:
         df_issues = df_issues.sort_values(by=["채널수", "조회수"], ascending=[False, False]).reset_index(drop=True)
 
-    # 이슈 미분류 상위 5개 영상 추출 (새 쟁점 후보)
+    # 이슈 미분류 상위 5개 영상 추출 (새 쟁점 후보) — 종합방송 포함 전체 df 기준
     unclassified_df = df.drop(index=list(matched_indices), errors="ignore")
     df_unclassified_top5 = unclassified_df.sort_values(by="조회수", ascending=False).head(5)
 
+    print_issue_debug(issue_debug)
+
     return df_issues, df_unclassified_top5
+
+
+def print_issue_debug(issue_debug: dict) -> None:
+    """
+    이슈별 매칭 제목을 실행 로그(GitHub Actions 콘솔/워크플로 로그)에만 출력합니다.
+    텔레그램 리포트 본문에는 포함하지 않습니다.
+    이슈 정의가 서로 무관한 사안을 뭉쳐서 과대 집계하고 있지는 않은지,
+    사람이 매일 눈으로 검산할 수 있게 하기 위한 용도입니다.
+    """
+    if not issue_debug:
+        return
+    print("\n" + "=" * 60)
+    print("[디버그] 이슈별 매칭 제목 (텔레그램 미전송 · 로그 전용)")
+    print("=" * 60)
+    for issue_name, rows in issue_debug.items():
+        print(f"\n■ {issue_name}")
+        for r in rows:
+            print(f"    {r['조회수']:>9,}회  [{r['채널']}]  {r['제목'][:60]}")
+    print("=" * 60 + "\n")
 
 
 def get_channel_uploads_playlist_id(youtube, channel_id):
