@@ -2,8 +2,8 @@ name: YouTube Daily Monitor
 
 on:
   schedule:
-    # KST 기준 매일 12:17 실행 (UTC 기준 03:17 / 대기열 피하기용 17분 설정)
-    - cron: '17 3 * * *'
+    # KST 기준 매일 06:17 실행 (UTC 21:17) — Actions 지연(~5h) 감안
+    - cron: '17 21 * * *'
   workflow_dispatch:
 
 jobs:
