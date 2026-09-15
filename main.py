@@ -98,6 +98,7 @@ def clean_title_for_person_search(title: str, channel_name: str) -> str:
         "김어준의 겸손은힘들다 뉴스공장",
         "김어준의 겸손은힘들다",
         "겸손은힘들다",
+        "겸손공장",
         "김용민 브리핑",
         channel_name
     ]
@@ -107,32 +108,14 @@ def clean_title_for_person_search(title: str, channel_name: str) -> str:
 
 
 def extract_major_issues(df):
-    """
-    주요 이슈 집계 + MBC(레거시) 확산 포함 여부 체크 + 미분류 상위 5 추출
-
-    [수정 이력]
-    종합방송(프레임=="종합방송") 행은 이슈 매칭 전체에서 제외합니다.
-    이유: 본방송 제목의 코너·게스트 대괄호에는 여러 인물명이 나열되는데
-    ("...한민수X신현영X정혜영...", "...최민희X황희두..." 등), 제목_정제는
-    채널 브랜딩 문구만 지우고 이 대괄호 내용은 그대로 남깁니다.
-    그 결과 예컨대 "당내 계파 갈등"(키워드 "최민희")이나 "부동산·증시"
-    (키워드 "부동산"·"코스피") 같은 이슈가, 실제로는 그 사안을 다루지
-    않은 본방송의 조회수 100만+를 통째로 흡수하는 오탐이 발생했습니다.
-    ("김어준 논란"만 제목_정제로 우회 방지하던 것을 전체로 일반화합니다.)
-
-    본방송(종합방송)에서 제외된 행은 기존과 동일하게 '미분류 상위 5'
-    (새 쟁점 후보) 풀에 그대로 남아, 사람이 직접 훑어볼 수 있습니다.
-    """
     issue_results = []
     matched_indices = set()
-    issue_debug = {}  # 검증용: 이슈별 매칭 제목 상위 몇 개 (텔레그램에는 안 보냄, 로그에만 출력)
+    issue_debug = {}
 
-    # 종합방송은 코너 혼재라 어떤 이슈에도 귀속시킬 수 없다 — 이슈 매칭 자체에서 제외
     df_matchable = df[df["프레임"] != "종합방송"]
 
     for issue_name, keywords in ISSUE_KEYWORDS.items():
         pattern = "|".join(keywords)
-        # 채널 브랜딩 문구 제거한 정제 제목으로 통일 매칭 (부작용 없음, 안전망 강화)
         sel = df_matchable[df_matchable["제목_정제"].str.contains(pattern, regex=True, na=False)]
 
         cnt = len(sel)
@@ -151,7 +134,6 @@ def extract_major_issues(df):
                 "mbc_tag": mbc_tag
             })
 
-            # 검증용 로그: 조회수 상위 5개 매칭 제목만 남긴다
             top5 = sel.sort_values(by="조회수", ascending=False).head(5)
             issue_debug[issue_name] = [
                 {"채널": r["채널명"], "조회수": int(r["조회수"]), "제목": r["제목"]}
@@ -162,7 +144,6 @@ def extract_major_issues(df):
     if not df_issues.empty:
         df_issues = df_issues.sort_values(by=["채널수", "조회수"], ascending=[False, False]).reset_index(drop=True)
 
-    # 이슈 미분류 상위 5개 영상 추출 (새 쟁점 후보) — 종합방송 포함 전체 df 기준
     unclassified_df = df.drop(index=list(matched_indices), errors="ignore")
     df_unclassified_top5 = unclassified_df.sort_values(by="조회수", ascending=False).head(5)
 
@@ -172,12 +153,6 @@ def extract_major_issues(df):
 
 
 def print_issue_debug(issue_debug: dict) -> None:
-    """
-    이슈별 매칭 제목을 실행 로그(GitHub Actions 콘솔/워크플로 로그)에만 출력합니다.
-    텔레그램 리포트 본문에는 포함하지 않습니다.
-    이슈 정의가 서로 무관한 사안을 뭉쳐서 과대 집계하고 있지는 않은지,
-    사람이 매일 눈으로 검산할 수 있게 하기 위한 용도입니다.
-    """
     if not issue_debug:
         return
     print("\n" + "=" * 60)
@@ -330,11 +305,13 @@ def save_current_data(data):
 
 
 def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str, unclassified_summary_str):
-    if not GEMINI_API_KEY:
-        return "[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]"
+    api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
+    if not api_key or api_key.strip() == "":
+        print("❌ GEMINI_API_KEY가 로드되지 않았거나 값이 비어 있습니다.")
+        return "<b>[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]</b>"
 
     try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
+        client = genai.Client(api_key=api_key.strip())
 
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 
@@ -405,11 +382,18 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
             return response.text
 
     except Exception as e:
-        return f"[AI 심층 분석 생성 오류: {e}]"
+        return f"<b>[AI 심층 분석 생성 오류: {e}]</b>"
 
 
 def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print(f"❌ 텔레그램 전송 실패: 토큰 또는 CHAT_ID 환경 변수가 제대로 설정되지 않았습니다. (TOKEN: {token}, CHAT_ID: {chat_id})")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
     
     MAX_LEN = 3800
     if len(message) <= MAX_LEN:
@@ -427,7 +411,7 @@ def send_telegram_message(message):
 
     for i, chunk in enumerate(chunks, 1):
         payload = {
-            "chat_id": TELEGRAM_CHAT_ID,
+            "chat_id": chat_id,
             "text": chunk,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
@@ -551,7 +535,7 @@ def run_monitoring():
         )
     unclassified_summary_text = "\n".join(unclassified_summary_lines) if unclassified_summary_lines else "• 미분류 상위 영상 없음"
 
-    # ----- [3. 주요 인물별 언급 및 전일 대비 단독 수치 병렬 집계] -----
+    # ----- [3. 주요 인물별 언급 및 단독 조회수 우선 집계 & 종합방송 15% 가중치 보정] -----
     prev_persons = prev_data.get("persons", {}) if prev_data else {}
 
     curr_persons_data = {}
@@ -569,11 +553,15 @@ def run_monitoring():
         p_views_standalone = int(sel_standalone["조회수"].sum()) if len(sel_standalone) > 0 else 0
         p_views_omnibus = int(sel_omnibus["조회수"].sum()) if len(sel_omnibus) > 0 else 0
         p_views_total = int(sel["조회수"].sum()) if p_cnt > 0 else 0
+        
+        # 종합방송 가중치 분할: 15% 가중치 반영
+        p_views_weighted = p_views_standalone + int(p_views_omnibus * 0.15)
 
         curr_persons_data[p] = {
             "cnt": p_cnt,
             "views_standalone": p_views_standalone,
-            "views_total": p_views_total
+            "views_total": p_views_total,
+            "views_weighted": p_views_weighted
         }
 
         if p_cnt > 0:
@@ -591,19 +579,21 @@ def run_monitoring():
                     trend_summary_for_ai.append(f"- {p}: 전일 단독 0회 -> 금일 단독 {p_views_standalone:,}회 (신규 진입/급증)")
 
             if len(sel_omnibus) > 0 and len(sel_standalone) == 0:
-                views_disp = f"단독 0회 (종합방송 {len(sel_omnibus)}건 포함 {p_views_total:,}회)"
+                views_disp = f"단독 0회 (보정합산 {p_views_weighted:,}회 | 풀버전 {len(sel_omnibus)}건 포함 {p_views_total:,}회)"
             elif len(sel_omnibus) > 0:
-                views_disp = f"단독 {p_views_standalone:,}회 (종합 포함 {p_views_total:,}회)"
+                views_disp = f"단독 {p_views_standalone:,}회 (보정합산 {p_views_weighted:,}회 | 풀버전 포함 {p_views_total:,}회)"
             else:
                 views_disp = f"단독 {p_views_standalone:,}회"
 
             line_text = f"• {p} : <b>{p_cnt}건</b> ({views_disp}{diff_str})"
-            person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_total, line_text))
-            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 종합포함 {p_views_total:,}회)")
+            # 정렬 우선순위 키: 1순위 p_views_standalone(단독 조회수), 2순위 p_views_weighted(보정 조회수)
+            person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_weighted, p_views_total, line_text))
+            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회)")
 
-    person_summary_lines.sort(key=lambda x: (x[2], x[3]), reverse=True)
+    # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
+    person_summary_lines.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
     
-    p_text_list = [item[4] for item in person_summary_lines]
+    p_text_list = [item[5] for item in person_summary_lines]
     person_summary_text = "\n".join(p_text_list) if p_text_list else "• 특이 언급 인물 없음"
     person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
     trend_summary_str_for_ai = "\n".join(trend_summary_for_ai) if trend_summary_for_ai else "전일 데이터 대비 유의미한 변동 없음"
@@ -641,7 +631,7 @@ def run_monitoring():
     msg += f"<b>■ 이슈 미분류 상위 5 (새 쟁점 후보)</b>\n"
     msg += f"{unclassified_summary_text}\n\n"
 
-    msg += f"<b>■ 주요 인물 언급 현황 (건수 | 조회수)</b>\n"
+    msg += f"<b>■ 주요 인물 언급 현황 (건수 | 단독 조회수 기준 정렬)</b>\n"
     msg += f"{person_summary_text}\n\n"
 
     msg += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
