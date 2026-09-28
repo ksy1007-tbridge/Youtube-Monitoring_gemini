@@ -17,7 +17,7 @@ TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 KST = timezone(timedelta(hours=9))
-PREV_DATA_FILE = "previous_data.json"
+PREV_DATA_FILE = os.environ.get("PREV_DATA_FILE", "previous_data.json")
 
 TARGET_CHANNELS = {
     "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
@@ -36,10 +36,34 @@ TARGET_CHANNELS = {
     "MBC 라디오 시사": "UCTTmtS2ljy1vyl_s-d_LEHQ",
 }
 
-TRACK_PERSONS = ["정청래", "김민석", "김어준", "유시민", "이재명", "최민희", "백낙청", "송영길", "이석현", "한민수", "최강욱", "이성윤", "정봉주"]
+# ---------------------------------------------------------
+# [추적 인물 - 별칭(alias) 사전]
+# 제목_정제 기준 부분 문자열 매칭. 성씨+직함("한 전 대표", "김 청장")이나 한 글자 별칭("李")은 오탐 위험으로 사용하지 않음.
+# ---------------------------------------------------------
+TRACK_PERSONS = {
+    "정청래": ["정청래"],
+    "김민석": ["김민석"],
+    "김어준": ["김어준"],
+    "유시민": ["유시민"],
+    "이재명": ["이재명", "이 대통령", "李 대통령", "李대통령"],
+    "최민희": ["최민희"],
+    "백낙청": ["백낙청"],
+    "송영길": ["송영길"],
+    "이석현": ["이석현"],
+    "한민수": ["한민수"],
+    "최강욱": ["최강욱"],
+    "이성윤": ["이성윤"],
+    "정봉주": ["정봉주"],
+    "한동훈": ["한동훈"],
+    "김지용": ["김지용", "중수청장"],
+    "장동혁": ["장동혁"],
+    "강훈식": ["강훈식"],
+    "조희대": ["조희대"],
+}
 
 # ---------------------------------------------------------
 # [이슈 키워드 그룹 재정의 - 오탐 제거 및 구조화]
+# 키워드는 re.escape 후 OR 매칭 (정규식 특수문자 안전)
 # ---------------------------------------------------------
 ISSUE_KEYWORDS = {
     "여론조사 조작 공방": [
@@ -48,18 +72,47 @@ ISSUE_KEYWORDS = {
     ],
     "김어준 논란": ["김어준"],  # 정제 제목(제목_정제) 기준 매칭
     "당내 계파 갈등": ["친청", "친명", "당내 반란", "계파", "지도부 갈등", "최민희", "탈당"],
-    "조희대 탄핵/사법부": ["조희대", "대법원장"],
-    "부동산·증시": ["부동산", "세제", "코스피", "삼성전자", "주주환원", "집값"]
+    "조희대/사법부": ["조희대", "대법원장"],
+    "부동산·증시": ["부동산", "세제", "코스피", "삼성전자", "주주환원", "집값"],
+    "유시민 논란": ["유시민"],
+    "중수청/김지용": ["김지용", "중수청"],
+    "UN·걸프 순방외교": ["순방", "유엔", "UN총회", "UN 연설", "걸프", "정상회담"],
+    "DMZ 지뢰/안보": ["DMZ", "비무장지대", "지뢰"],
+    "강훈식·성남라인": ["강훈식", "성남라인", "성남 라인"],
 }
 
+# ---------------------------------------------------------
+# [프레임 키워드] 위에서부터 첫 매칭 프레임으로 판정 (순서가 우선순위)
+# 오탐 방지: 단독 'UN', '안보', '이란', '군', '핵' 등 짧은 키워드는 사용하지 않음
+# ---------------------------------------------------------
 FRAME_KEYWORDS = {
-    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "후보", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "공천", "당권", "폭탄", "쉬쉬하던", "찌라시", "출당"],
-    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질", "협박", "자업자득"],
-    "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
-    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "대통령", "세제", "투자자", "중복 상장", "주주환원"],
-    "검찰/수사": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권"],
+    "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "공천", "당권", "쉬쉬하던", "찌라시", "출당"],
+    "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질", "협박", "자업자득", "유시민", "한동훈", "장동혁", "김지용", "강훈식"],
+    "외교·안보": ["외교", "순방", "정상회담", "유엔", "UN총회", "UN 연설", "UN순방", "걸프", "중동", "한미", "미중", "한중", "한일", "트럼프", "관세협상", "우크라", "젤렌스키", "러시아", "포로", "북한", "김정은", "DMZ", "비무장지대", "지뢰", "국방", "합참", "안보실", "국가안보", "NSC"],
+    "검찰/사법": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권", "조희대", "대법원", "대법관", "법원행정처", "재제청", "사법부", "중수청"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
+    "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
+    "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "세제", "투자자", "중복 상장", "주주환원", "집값", "실거주", "주택"],
 }
+
+# ---------------------------------------------------------
+# [채널 편중 / 자동 추출 설정]
+# ---------------------------------------------------------
+CONCENTRATION_TOP_SHARE = 50.0      # 최대채널 조회 비중(%) 초과 시 편중
+CONCENTRATION_TOP2_VID_SHARE = 60.0  # 상위 2개 영상 조회 비중(%) 초과 시 편중 (영상 3건 이상일 때만)
+
+DYNAMIC_MAX_ISSUES = 5
+DYNAMIC_MAX_PERSONS = 5
+DYNAMIC_MIN_TITLES = 3
+DYNAMIC_MIN_CHANNELS = 2
+DYNAMIC_TAG = " (자동)"
+DYNAMIC_ALIAS_STOPWORDS = {
+    "대통령", "의원", "대표", "장관", "총리", "청장", "위원장", "원장", "여사", "기자", "작가", "의장", "후보",
+    "민주당", "국민의힘", "국힘", "정부", "청와대", "대통령실", "여당", "야당", "검찰", "법원", "국회",
+}
+SURNAME_TITLE_RE = re.compile(
+    r"^[가-힣](\s?전)?\s?(대통령|대표|의원|장관|청장|총리|위원장|원장|여사|작가|기자|의장|전 대표|후보)$"
+)
 
 OMNIBUS_KEYWORDS = [
     "뉴스공장 2026", "뉴스공장 월요일", "뉴스공장 화요일", "뉴스공장 수요일", "뉴스공장 목요일", "뉴스공장 금요일",
@@ -107,16 +160,65 @@ def clean_title_for_person_search(title: str, channel_name: str) -> str:
     return cleaned
 
 
-def extract_major_issues(df):
+def keywords_pattern(keywords) -> str:
+    return "|".join(re.escape(k) for k in keywords if k)
+
+
+def channel_concentration(sel):
+    """채널 편중도: 최대채널 조회 비중, 상위 2개 영상 조회 비중, 채널 수."""
+    if sel is None or len(sel) == 0:
+        return None
+    total = int(sel["조회수"].sum())
+    if total <= 0:
+        return None
+    by_ch = sel.groupby("채널명")["조회수"].sum().sort_values(ascending=False)
+    top_share = round(float(by_ch.iloc[0]) / total * 100, 1)
+    top2_vid_share = round(float(sel["조회수"].nlargest(2).sum()) / total * 100, 1)
+    n_videos = len(sel)
+    flagged = top_share > CONCENTRATION_TOP_SHARE or (
+        n_videos >= 3 and top2_vid_share > CONCENTRATION_TOP2_VID_SHARE
+    )
+    return {
+        "top_ch": str(by_ch.index[0]),
+        "top_share": top_share,
+        "top2_vid_share": top2_vid_share,
+        "n_ch": int(len(by_ch)),
+        "n_videos": n_videos,
+        "flagged": bool(flagged),
+    }
+
+
+def format_concentration_report(conc) -> str:
+    if not conc:
+        return ""
+    flag = " ⚠편중" if conc["flagged"] else ""
+    return f" | 최대채널 {html.escape(conc['top_ch'])} {conc['top_share']}%{flag}"
+
+
+def format_concentration_ai(conc) -> str:
+    if not conc:
+        return ""
+    flag = " [편중]" if conc["flagged"] else ""
+    return f" | 채널집중: {conc['top_ch']} {conc['top_share']}%, 상위2개 영상 {conc['top2_vid_share']}%{flag}"
+
+
+def match_titles(series, keywords):
+    pattern = keywords_pattern(keywords)
+    if not pattern:
+        return series.str.contains(r"(?!x)x", regex=True, na=False)
+    return series.str.contains(pattern, regex=True, na=False)
+
+
+def extract_major_issues(df, issue_keywords=None):
+    issue_keywords = issue_keywords or ISSUE_KEYWORDS
     issue_results = []
     matched_indices = set()
     issue_debug = {}
 
     df_matchable = df[df["프레임"] != "종합방송"]
 
-    for issue_name, keywords in ISSUE_KEYWORDS.items():
-        pattern = "|".join(keywords)
-        sel = df_matchable[df_matchable["제목_정제"].str.contains(pattern, regex=True, na=False)]
+    for issue_name, keywords in issue_keywords.items():
+        sel = df_matchable[match_titles(df_matchable["제목_정제"], keywords)]
 
         cnt = len(sel)
         if cnt > 0:
@@ -131,7 +233,8 @@ def extract_major_issues(df):
                 "건수": cnt,
                 "채널수": channel_cnt,
                 "조회수": total_views,
-                "mbc_tag": mbc_tag
+                "mbc_tag": mbc_tag,
+                "concentration": channel_concentration(sel),
             })
 
             top5 = sel.sort_values(by="조회수", ascending=False).head(5)
@@ -150,6 +253,139 @@ def extract_major_issues(df):
     print_issue_debug(issue_debug)
 
     return df_issues, df_unclassified_top5
+
+
+def is_valid_dynamic_alias(alias) -> bool:
+    if not isinstance(alias, str):
+        return False
+    a = alias.strip()
+    if len(a) < 2:
+        return False
+    if a.isascii() and len(a) < 3:  # 'UN' 등 짧은 영문 약어 제외
+        return False
+    if a in DYNAMIC_ALIAS_STOPWORDS:
+        return False
+    if SURNAME_TITLE_RE.match(a):  # 성씨+직함 ("한 전 대표", "김 청장")
+        return False
+    return True
+
+
+def _parse_json_loose(text):
+    if not text:
+        return None
+    t = text.strip()
+    t = re.sub(r"^```(?:json)?\s*", "", t)
+    t = re.sub(r"\s*```$", "", t).strip()
+    try:
+        return json.loads(t)
+    except Exception:
+        pass
+    m = re.search(r"\{[\s\S]*\}", t)
+    if m:
+        try:
+            return json.loads(m.group(0))
+        except Exception:
+            return None
+    return None
+
+
+def extract_dynamic_entities(all_titles):
+    """제목 목록에서 오늘의 신규 이슈/인물 후보를 Gemini로 1회 추출.
+    반환: {"issues": [{"name", "keywords"}], "persons": [{"name", "aliases"}]} / 실패 시 빈 후보."""
+    empty = {"issues": [], "persons": []}
+    api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
+    if not api_key or not api_key.strip() or not all_titles:
+        return empty
+
+    try:
+        client = genai.Client(api_key=api_key.strip())
+        titles_text = "\n".join(f"- {t}" for t in all_titles[:150])
+        prompt = f"""
+        아래는 오늘 수집된 한국 시사 유튜브 영상 제목 목록입니다.
+        여러 제목에 반복 등장하는 오늘의 핵심 이슈와 인물을 추출하세요.
+
+        [규칙]
+        - keywords/aliases는 반드시 아래 제목에 글자 그대로 등장하는 문자열만 쓰세요.
+        - 성씨+직함(예: '한 전 대표', '김 청장', '이 대통령'), 한 글자, 직함 단독('대통령', '의원'), 짧은 영문 약어('UN')는 쓰지 마세요.
+        - 이슈는 최대 8개, 인물은 최대 8명. 제목 3개 이상에 등장하는 것만.
+        - 반드시 JSON만 출력: {{"issues":[{{"name":"이슈명","keywords":["키워드1","키워드2"]}}],"persons":[{{"name":"인물명","aliases":["인물명","별칭"]}}]}}
+
+        [제목 목록]
+        {titles_text}
+        """
+
+        primary_model = 'gemini-3.5-flash-lite'
+        fallback_model = 'gemini-3.1-flash-lite'
+        config = {"response_mime_type": "application/json", "temperature": 0.2}
+
+        try:
+            response = client.models.generate_content(model=primary_model, contents=prompt, config=config)
+        except Exception as primary_e:
+            print(f"⚠️ [자동 추출] {primary_model} 실패 ({primary_e}), {fallback_model}로 재시도")
+            response = client.models.generate_content(model=fallback_model, contents=prompt, config=config)
+
+        data = _parse_json_loose(getattr(response, "text", None))
+        if not isinstance(data, dict):
+            print("ℹ️ [자동 추출] JSON 파싱 실패 → 고정 사전만 사용")
+            return empty
+
+        out = {"issues": [], "persons": []}
+        for it in data.get("issues") or []:
+            if isinstance(it, dict) and isinstance(it.get("name"), str):
+                kws = [k.strip() for k in (it.get("keywords") or []) if is_valid_dynamic_alias(k)]
+                if kws:
+                    out["issues"].append({"name": it["name"].strip(), "keywords": kws})
+        for it in data.get("persons") or []:
+            if isinstance(it, dict) and isinstance(it.get("name"), str):
+                als = [a.strip() for a in ([it["name"]] + list(it.get("aliases") or [])) if is_valid_dynamic_alias(a)]
+                als = list(dict.fromkeys(als))
+                if als:
+                    out["persons"].append({"name": it["name"].strip(), "aliases": als})
+        return out
+    except Exception as e:
+        print(f"ℹ️ [자동 추출] 실패 → 고정 사전만 사용 ({e})")
+        return empty
+
+
+def filter_dynamic_entities(df, candidates):
+    """자동 추출 후보를 코드로 결정적으로 검증: 제목 >= DYNAMIC_MIN_TITLES, 채널 >= DYNAMIC_MIN_CHANNELS,
+    고정 사전과 중복 제외, 최대 개수 제한. 반환: (issue_dict, person_dict) — 키에 '(자동)' 태그."""
+    dyn_issues, dyn_persons = {}, {}
+    try:
+        fixed_issue_kws = {k for kws in ISSUE_KEYWORDS.values() for k in kws}
+        fixed_person_aliases = {a for als in TRACK_PERSONS.values() for a in als} | set(TRACK_PERSONS.keys())
+        df_matchable = df[df["프레임"] != "종합방송"]
+
+        def passes(frame_df, kws):
+            sel = frame_df[match_titles(frame_df["제목_정제"], kws)]
+            return len(sel) >= DYNAMIC_MIN_TITLES and sel["채널명"].nunique() >= DYNAMIC_MIN_CHANNELS
+
+        for it in candidates.get("issues", []):
+            if len(dyn_issues) >= DYNAMIC_MAX_ISSUES:
+                break
+            name = it["name"]
+            kws = [k for k in it["keywords"] if k not in fixed_issue_kws and k not in fixed_person_aliases]
+            if not kws or name in ISSUE_KEYWORDS or f"{name}{DYNAMIC_TAG}" in dyn_issues:
+                continue
+            if passes(df_matchable, kws):
+                dyn_issues[f"{name}{DYNAMIC_TAG}"] = kws
+
+        for it in candidates.get("persons", []):
+            if len(dyn_persons) >= DYNAMIC_MAX_PERSONS:
+                break
+            name = it["name"]
+            als = it["aliases"]
+            if name in TRACK_PERSONS or any(a in fixed_person_aliases for a in als) or f"{name}{DYNAMIC_TAG}" in dyn_persons:
+                continue
+            if passes(df, als):
+                dyn_persons[f"{name}{DYNAMIC_TAG}"] = als
+    except Exception as e:
+        print(f"ℹ️ [자동 추출] 검증 실패 → 고정 사전만 사용 ({e})")
+        return {}, {}
+
+    if dyn_issues or dyn_persons:
+        print(f"ℹ️ [자동 추출] 이슈 {list(dyn_issues)} / 인물 {list(dyn_persons)}")
+    return dyn_issues, dyn_persons
 
 
 def print_issue_debug(issue_debug: dict) -> None:
@@ -304,7 +540,7 @@ def save_current_data(data):
         print(f"현재 데이터 저장 실패: {e}")
 
 
-def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str, unclassified_summary_str):
+def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str, unclassified_summary_str, channel_volume_str=""):
     api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
     if not api_key or api_key.strip() == "":
         print("❌ GEMINI_API_KEY가 로드되지 않았거나 값이 비어 있습니다.")
@@ -322,11 +558,14 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         [오늘의 상위 영상 데이터 (누적 조회수 TOP 10)]
         {top_videos}
 
-        [오늘의 주요 확산 이슈 현황 (건수 | 채널 수 | 총 조회수 | MBC포함여부)]
+        [오늘의 주요 이슈 언급 현황 (건수 | 채널 수 | 총 조회수 | MBC포함여부 | 채널집중, [편중] 표시 / '(자동)'은 제목에서 자동 추출된 신규 항목)]
         {issue_summary_str}
 
         [이슈 미분류 상위 영상 (새 쟁점 후보)]
         {unclassified_summary_str}
+
+        [채널별 수집 비중 (수집 영상 수 기준)]
+        {channel_volume_str}
 
         [오늘의 프레임별 현황 및 전일 대비 비중 변화]
         {frame_stat_summary}
@@ -340,9 +579,11 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
         [엄격한 작성 지침 - 반드시 준수]
         1. [주요 확산 이슈 및 인물 수치 최우선 분석]:
-           - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 여론조사 조작 공방, 계파 갈등 등) 및 레거시(MBC) 확장 여부를 1순위 핵심 기류로 필수 반영하세요.
-        2. [프레임 착시 보정]:
-           - '당내/인물' 프레임의 대다수는 전당대회 사후 여파 및 인물 갈등 관련 콘텐츠입니다. 결합 비중을 통해 여론 집결도를 분석하세요.
+           - 채널 수(확산도)가 넓은 주요 확산 이슈(예: 오늘 집계 상위 이슈) 및 레거시(MBC) 확장 여부를 1순위 핵심 기류로 필수 반영하세요.
+        2. [키워드 집계의 한계 — 방향성 단정 금지]:
+           - 이슈·인물 건수는 제목 키워드 일치 건수일 뿐이며 찬반·논조를 구분하지 않습니다. 반대·신중론 영상(예: '탄핵까지 가면 안된다')도 같은 건수에 포함됩니다.
+           - 건수·채널 수·조회수만으로 '여론 집결', '결집', '공감대', '한목소리', '총공세' 등 방향성·합의를 서술하지 마세요. '○개 채널에서 언급'처럼 언급 범위로만 표현하세요.
+           - 논조를 언급하려면 상위 영상 제목에 근거해 '제목상 찬성/반대/유보 논조 혼재'처럼 근거와 함께 쓰세요.
         3. [자가 단정 및 추측성 서술 절대 금지]:
            - 채널의 '특화 편성', '편성 전략' 등 방송사의 내면 의도를 단정하지 마세요.
            - 종합방송 비중이 높은 상태에서 내용이나 시청층 심리를 자의적으로 해석하지 마세요.
@@ -350,6 +591,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
            - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
         5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권 인물이나 단순 축구/가십성 인물 제외)
+        6. [채널 편중 보정]: 인물·이슈의 최대채널 비중이 50%를 넘거나 [편중] 표시가 있으면 '대중적 관심 견인', '관심 집중', '폭발적 반응' 등으로 일반화하지 말고 '○○ 채널(비중 N%) 중심 조회'로 편중 사실을 함께 쓰세요. 채널 수 2곳 이하 이슈에는 '확산' 표현을 쓰지 마세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
@@ -361,7 +603,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         - (오늘 데이터 기반 주요 인물 및 신규 핵심 이슈 키워드 8~10개)
 
         3. 모니터링 관측 평가
-        - (채널 폭 확산도 및 인물 관심도 이동에 기반한 분석가 관점의 총평 1문장)
+        - (채널 폭 확산도 및 인물 관심도 이동에 기반한 분석가 관점의 총평 1문장, 채널 편중이 있으면 편중 채널을 함께 표기)
         """
 
         primary_model = 'gemini-3.5-flash-lite'
@@ -517,15 +759,40 @@ def run_monitoring():
     frame_stat_summary_str = "\n".join(frame_stat_summary_for_ai)
     frame_trend_str_for_ai = "\n".join(frame_trend_for_ai) if frame_trend_for_ai else "전일 프레임 비중 비교 데이터 없음"
 
+    # ----- [채널별 수집 비중] -----
+    ch_counts = df["채널명"].value_counts()
+    channel_volume_parts = [
+        f"{html.escape(str(ch))} {int(c)}개({round(int(c) / total_videos * 100, 1)}%)"
+        for ch, c in ch_counts.head(3).items()
+    ]
+    top_ch_volume_share = round(int(ch_counts.iloc[0]) / total_videos * 100, 1)
+    channel_volume_flag = " ⚠편중" if top_ch_volume_share > CONCENTRATION_TOP_SHARE else ""
+    channel_volume_text = ", ".join(channel_volume_parts) + channel_volume_flag
+    channel_volume_str_for_ai = ", ".join(
+        f"{ch} {int(c)}개({round(int(c) / total_videos * 100, 1)}%)" for ch, c in ch_counts.head(3).items()
+    ) + (" [편중]" if channel_volume_flag else "")
+
+    # ----- [2-0. 오늘의 신규 이슈/인물 자동 추출 (실패 시 고정 사전만 사용)] -----
+    dyn_candidates = extract_dynamic_entities(df["제목_정제"].drop_duplicates().tolist())
+    dyn_issues, dyn_persons = filter_dynamic_entities(df, dyn_candidates)
+    issue_keywords_today = {**ISSUE_KEYWORDS, **dyn_issues}
+    person_aliases_today = {**TRACK_PERSONS, **dyn_persons}
+
     # ----- [2. 주요 확산 이슈 집계 및 미분류 상위 5 추출] -----
-    df_issues, df_unclassified_top5 = extract_major_issues(df)
+    df_issues, df_unclassified_top5 = extract_major_issues(df, issue_keywords_today)
     
     issue_summary_lines = []
+    issue_summary_for_ai = []
     for _, row in df_issues.iterrows():
+        conc = row.get("concentration")
         issue_summary_lines.append(
-            f"• {row['이슈명']} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}"
+            f"• {html.escape(str(row['이슈명']))} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_report(conc)}"
+        )
+        issue_summary_for_ai.append(
+            f"- {row['이슈명']}: {row['건수']}건 | {row['채널수']}채널 | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_ai(conc)}"
         )
     issue_summary_text = "\n".join(issue_summary_lines) if issue_summary_lines else "• 특이 이슈 없음"
+    issue_summary_str_for_ai = "\n".join(issue_summary_for_ai) if issue_summary_for_ai else "특이 이슈 없음"
 
     unclassified_summary_lines = []
     for _, row in df_unclassified_top5.iterrows():
@@ -543,8 +810,8 @@ def run_monitoring():
     person_summary_for_ai = []
     trend_summary_for_ai = []
 
-    for p in TRACK_PERSONS:
-        sel = df[df["제목_정제"].str.contains(p, regex=False)]
+    for p, aliases in person_aliases_today.items():
+        sel = df[match_titles(df["제목_정제"], aliases)]
         p_cnt = len(sel)
 
         sel_standalone = sel[sel["프레임"] != "종합방송"]
@@ -585,10 +852,11 @@ def run_monitoring():
             else:
                 views_disp = f"단독 {p_views_standalone:,}회"
 
-            line_text = f"• {p} : <b>{p_cnt}건</b> ({views_disp}{diff_str})"
+            conc = channel_concentration(sel_standalone)
+            line_text = f"• {html.escape(p)} : <b>{p_cnt}건</b> ({views_disp}{format_concentration_report(conc)}{diff_str})"
             # 정렬 우선순위 키: 1순위 p_views_standalone(단독 조회수), 2순위 p_views_weighted(보정 조회수)
             person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_weighted, p_views_total, line_text))
-            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회)")
+            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회){format_concentration_ai(conc)}")
 
     # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
     person_summary_lines.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
@@ -607,7 +875,7 @@ def run_monitoring():
     ai_insight_text = generate_ai_insight(
         df_top, frame_stat_summary_str, person_summary_str_for_ai, 
         trend_summary_str_for_ai, frame_trend_str_for_ai, 
-        issue_summary_text, unclassified_summary_text
+        issue_summary_str_for_ai, unclassified_summary_text, channel_volume_str_for_ai
     )
 
     # ----- [보고서 메시지 작성] -----
@@ -620,7 +888,8 @@ def run_monitoring():
         msg += f"• 신규 업로드 없음: [{', '.join(no_upload_channels)}]\n"
     if failed_channels:
         msg += f"• 수집 실패(API 오류): [{', '.join(failed_channels)}]\n"
-    msg += f"• 수집 영상: 총 {total_videos}개 (10만+ 대박 영상: {hot_100k_count}개)\n\n"
+    msg += f"• 수집 영상: 총 {total_videos}개 (10만+ 대박 영상: {hot_100k_count}개)\n"
+    msg += f"• 채널별 수집 비중: {channel_volume_text}\n\n"
 
     msg += f"<b>■ 프레임별 현황 (건수 | 조회수 비중)</b>\n"
     msg += f"{frame_summary_text}\n\n"
