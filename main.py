@@ -76,7 +76,7 @@ ISSUE_KEYWORDS = {
     "부동산·증시": ["부동산", "세제", "코스피", "삼성전자", "주주환원", "집값"],
     "유시민 논란": ["유시민"],
     "중수청/김지용": ["김지용", "중수청"],
-    "UN·걸프 순방외교": ["순방", "유엔", "UN총회", "UN 연설", "걸프", "정상회담"],
+    "외교·순방(UN·걸프·우크라)": ["순방", "유엔", "UN총회", "UN 연설", "걸프", "정상회담", "젤렌스키", "우크라", "포로 송환", "포로송환"],
     "DMZ 지뢰/안보": ["DMZ", "비무장지대", "지뢰"],
     "강훈식·성남라인": ["강훈식", "성남라인", "성남 라인"],
 }
@@ -88,12 +88,25 @@ ISSUE_KEYWORDS = {
 FRAME_KEYWORDS = {
     "전당대회/경선": ["전당대회", "최고위원", "당대표", "경선", "짝짓기", "투표전략", "경선후보", "토론", "재검표", "부정선거", "윤리위", "당규", "합동연설회", "전국당원대회", "공천", "당권", "쉬쉬하던", "찌라시", "출당"],
     "당내/인물": ["정청래", "김민석", "이재명", "송영길", "박지원", "박은정", "이석현", "신인규", "반명", "친명", "최민희", "스캔들", "친청계", "반명몰이", "민심이반", "팀김어준", "뉴스비평", "신천지", "고소", "고소전", "패악질", "협박", "자업자득", "유시민", "한동훈", "장동혁", "김지용", "강훈식"],
-    "외교·안보": ["외교", "순방", "정상회담", "유엔", "UN총회", "UN 연설", "UN순방", "걸프", "중동", "한미", "미중", "한중", "한일", "트럼프", "관세협상", "우크라", "젤렌스키", "러시아", "포로", "북한", "김정은", "DMZ", "비무장지대", "지뢰", "국방", "합참", "안보실", "국가안보", "NSC"],
+    "외교·안보": ["외교", "순방", "정상회담", "유엔", "UN총회", "UN 연설", "UN순방", "걸프", "중동", "한미", "미중", "한중", "한일", "트럼프", "관세협상", "우크라", "젤렌스키", "러시아", "포로 송환", "포로송환", "포로", "북한", "김정은", "DMZ", "비무장지대", "지뢰", "국방", "합참", "안보실", "국가안보", "NSC"],
     "검찰/사법": ["검찰", "검수완박", "수사권", "공수처", "기소", "수사", "공소취소", "특검", "보완수사권", "조희대", "대법원", "대법관", "법원행정처", "재제청", "사법부", "중수청"],
     "과거정권/윤": ["윤석열", "김건희", "이태원", "내란", "계엄", "윤 정권"],
     "언론/미디어": ["진보언론", "편파보도", "기자회견", "기자 편파", "방송 세탁", "왜곡 보도", "기괴한 언론", "저널리즘"],
     "민생/경제/정책": ["교육", "경제", "민생", "물가", "부동산", "교실", "코스피", "삼성전자", "레버리지", "ETF", "실적발표", "코스닥", "사이드카", "증시", "소상공인", "세제", "투자자", "중복 상장", "주주환원", "집값", "실거주", "주택"],
 }
+
+# ---------------------------------------------------------
+# [문맥 조건부 별칭] 약칭(trigger)이 문맥어 중 하나와 함께 제목에 있을 때만 해당 인물로 인정
+# 예: '희대의 밥값'(청탁금지법) → 조희대 / '희대의 사기꾼' → 미매칭
+# ---------------------------------------------------------
+CONTEXT_ALIASES = {
+    "조희대": [
+        ("희대", ["청탁금지법", "밥값", "대법원", "대법원장", "사법", "법원", "탄핵", "김영란법"]),
+    ],
+}
+# 문맥 별칭을 함께 적용할 이슈/프레임 → 인물명 목록
+ISSUE_CONTEXT_LINKS = {"조희대/사법부": ["조희대"]}
+FRAME_CONTEXT_LINKS = {"검찰/사법": ["조희대"]}
 
 # ---------------------------------------------------------
 # [채널 편중 / 자동 추출 설정]
@@ -130,6 +143,24 @@ def parse_iso8601_duration(duration_str):
     return hours * 3600 + minutes * 60 + seconds
 
 
+def context_alias_hit(title, name) -> bool:
+    """CONTEXT_ALIASES[name]의 (trigger, 문맥어) 중 하나라도 trigger와 문맥어가 제목에 함께 있으면 True."""
+    if not isinstance(title, str):
+        return False
+    for trigger, contexts in CONTEXT_ALIASES.get(name, []):
+        if trigger in title and any(c in title for c in contexts):
+            return True
+    return False
+
+
+def context_mask(series, names):
+    """names 중 하나라도 문맥 별칭이 맞는 제목의 bool Series."""
+    names = [n for n in (names or []) if n in CONTEXT_ALIASES]
+    if not names:
+        return series.map(lambda _: False).astype(bool)
+    return series.map(lambda t: any(context_alias_hit(t, n) for n in names)).astype(bool)
+
+
 def classify_frame(title: str, duration_sec: int) -> str:
     title_lower = title.lower()
 
@@ -142,6 +173,8 @@ def classify_frame(title: str, duration_sec: int) -> str:
         for kw in keywords:
             if kw.lower() in title_lower:
                 return frame
+        if any(context_alias_hit(title, n) for n in FRAME_CONTEXT_LINKS.get(frame, [])):
+            return frame
     return "기타"
 
 
@@ -218,7 +251,9 @@ def extract_major_issues(df, issue_keywords=None):
     df_matchable = df[df["프레임"] != "종합방송"]
 
     for issue_name, keywords in issue_keywords.items():
-        sel = df_matchable[match_titles(df_matchable["제목_정제"], keywords)]
+        titles = df_matchable["제목_정제"]
+        mask = match_titles(titles, keywords) | context_mask(titles, ISSUE_CONTEXT_LINKS.get(issue_name))
+        sel = df_matchable[mask]
 
         cnt = len(sel)
         if cnt > 0:
@@ -354,6 +389,7 @@ def filter_dynamic_entities(df, candidates):
     try:
         fixed_issue_kws = {k for kws in ISSUE_KEYWORDS.values() for k in kws}
         fixed_person_aliases = {a for als in TRACK_PERSONS.values() for a in als} | set(TRACK_PERSONS.keys())
+        fixed_person_aliases |= {trig for rules in CONTEXT_ALIASES.values() for trig, _ in rules}
         df_matchable = df[df["프레임"] != "종합방송"]
 
         def passes(frame_df, kws):
@@ -811,7 +847,7 @@ def run_monitoring():
     trend_summary_for_ai = []
 
     for p, aliases in person_aliases_today.items():
-        sel = df[match_titles(df["제목_정제"], aliases)]
+        sel = df[match_titles(df["제목_정제"], aliases) | context_mask(df["제목_정제"], [p])]
         p_cnt = len(sel)
 
         sel_standalone = sel[sel["프레임"] != "종합방송"]
