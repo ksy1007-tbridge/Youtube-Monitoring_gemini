@@ -1,0 +1,20 @@
+{
+  "as_of": "2026-10-19",
+  "note": "LLM 프롬프트에 '확정 사실'로 주입되는 현직 인물·정당 명단. 직함이 바뀌면 이 파일만 고치면 된다. party/title이 null이면 프롬프트에서 해당 항목을 생략한다(추측 금지). show_party가 false이면 본문에 정당명을 붙이지 않는다(생략 시 자치단체장 직함이면 자동으로 false).",
+  "parties": {
+    "ruling": "더불어민주당",
+    "opposition": "국민의힘"
+  },
+  "party_aliases": {
+    "더불어민주당": ["더불어민주당", "민주당"],
+    "국민의힘": ["국민의힘", "국힘"]
+  },
+  "persons": [
+    {"name": "이재명", "party": "더불어민주당", "title": "대통령", "display": "이재명 대통령"},
+    {"name": "김민석", "party": "더불어민주당", "title": "더불어민주당 대표", "display": "김민석 더불어민주당 대표"},
+    {"name": "추미애", "party": "더불어민주당", "title": "경기도지사", "show_party": false, "display": "추미애 경기도지사"},
+    {"name": "오세훈", "party": "국민의힘", "title": "서울시장", "show_party": false, "display": "오세훈 서울시장"},
+    {"name": "양향자", "party": "국민의힘", "title": "국민의힘 최고위원", "display": "양향자 국민의힘 최고위원"},
+    {"name": "한동훈", "party": "무소속", "title": "국회의원", "display": "한동훈 무소속 국회의원"}
+  ]
+}

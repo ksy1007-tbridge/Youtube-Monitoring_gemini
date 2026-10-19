@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from google import genai
 
+from person_facts import load_person_facts, build_fact_block, audit_person_titles
+
 # ---------------------------------------------------------
 # [환경 변수 로드]
 # ---------------------------------------------------------
@@ -16,8 +18,23 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+
+def redact_secrets(value) -> str:
+    """예외 메시지 등에 섞인 API 키·텔레그램 토큰을 가린다 (로그/텔레그램 출력용)."""
+    text = str(value)
+    for secret in (YOUTUBE_API_KEY, GEMINI_API_KEY, TELEGRAM_BOT_TOKEN):
+        if secret and secret.strip():
+            text = text.replace(secret.strip(), "***")
+    text = re.sub(r"bot\d+:[A-Za-z0-9_-]+", "bot***", text)
+    text = re.sub(r"([?&](?:key|api_key)=)[^&\s'\"]+", r"\1***", text)
+    return text
+
 KST = timezone(timedelta(hours=9))
 PREV_DATA_FILE = os.environ.get("PREV_DATA_FILE", "previous_data.json")
+
+# 현직 인물·정당 사실 기준 (persons_current.json) — AI 분석 프롬프트에 주입
+PERSON_FACTS = load_person_facts()
+FACT_BLOCK = build_fact_block(PERSON_FACTS)
 
 TARGET_CHANNELS = {
     "김어준의 겸손은힘들다 뉴스공장": "UCAAvO0ehWox1bbym3rXKBZw",
@@ -356,7 +373,7 @@ def extract_dynamic_entities(all_titles):
         try:
             response = client.models.generate_content(model=primary_model, contents=prompt, config=config)
         except Exception as primary_e:
-            print(f"⚠️ [자동 추출] {primary_model} 실패 ({primary_e}), {fallback_model}로 재시도")
+            print(f"⚠️ [자동 추출] {primary_model} 실패 ({redact_secrets(primary_e)}), {fallback_model}로 재시도")
             response = client.models.generate_content(model=fallback_model, contents=prompt, config=config)
 
         data = _parse_json_loose(getattr(response, "text", None))
@@ -378,7 +395,7 @@ def extract_dynamic_entities(all_titles):
                     out["persons"].append({"name": it["name"].strip(), "aliases": als})
         return out
     except Exception as e:
-        print(f"ℹ️ [자동 추출] 실패 → 고정 사전만 사용 ({e})")
+        print(f"ℹ️ [자동 추출] 실패 → 고정 사전만 사용 ({redact_secrets(e)})")
         return empty
 
 
@@ -416,7 +433,7 @@ def filter_dynamic_entities(df, candidates):
             if passes(df, als):
                 dyn_persons[f"{name}{DYNAMIC_TAG}"] = als
     except Exception as e:
-        print(f"ℹ️ [자동 추출] 검증 실패 → 고정 사전만 사용 ({e})")
+        print(f"ℹ️ [자동 추출] 검증 실패 → 고정 사전만 사용 ({redact_secrets(e)})")
         return {}, {}
 
     if dyn_issues or dyn_persons:
@@ -444,7 +461,7 @@ def get_channel_uploads_playlist_id(youtube, channel_id):
         if items:
             return items[0]["contentDetails"]["relatedPlaylists"]["uploads"]
     except Exception as e:
-        print(f"채널 ID({channel_id}) 재생목록 조회 실패: {e}")
+        print(f"채널 ID({channel_id}) 재생목록 조회 실패: {redact_secrets(e)}")
     return None
 
 
@@ -464,7 +481,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
             ).execute()
             video_items_raw.extend(playlist_response.get("items", []))
         except Exception as e:
-            print(f"플레이리스트 수집 에러 ({channel_name}): {e}")
+            print(f"플레이리스트 수집 에러 ({channel_name}): {redact_secrets(e)}")
 
     try:
         search_response = youtube.search().list(
@@ -482,7 +499,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 s_item["snippet"]["resourceId"] = {"videoId": v_id}
                 video_items_raw.append(s_item)
     except Exception as e:
-        print(f"Search API 수집 에러 ({channel_name}): {e}")
+        print(f"Search API 수집 에러 ({channel_name}): {redact_secrets(e)}")
 
     video_ids = list({item["snippet"]["resourceId"]["videoId"] for item in video_items_raw if "resourceId" in item.get("snippet", {})})
     
@@ -552,7 +569,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                 })
 
         except Exception as e:
-            print(f"영상 상세 수집 에러 ({channel_name}): {e}")
+            print(f"영상 상세 수집 에러 ({channel_name}): {redact_secrets(e)}")
 
     print(f"✅ [{channel_name}] 최종 수집: 총 {len(video_list)}개 영상")
     return video_list
@@ -564,7 +581,7 @@ def load_previous_data():
             with open(PREV_DATA_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception as e:
-            print(f"이전 데이터 로드 실패: {e}")
+            print(f"이전 데이터 로드 실패: {redact_secrets(e)}")
     return None
 
 
@@ -573,7 +590,7 @@ def save_current_data(data):
         with open(PREV_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        print(f"현재 데이터 저장 실패: {e}")
+        print(f"현재 데이터 저장 실패: {redact_secrets(e)}")
 
 
 def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_summary_str, frame_trend_str, issue_summary_str, unclassified_summary_str, channel_volume_str=""):
@@ -590,6 +607,8 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         prompt = f"""
         당신은 수치 데이터와 실시간 프레임 전환을 정교하게 분석하는 수석 데이터 분석가입니다.
         과거 어제의 분석 프레임이나 지나간 이슈를 재활용하지 말고, 오직 오늘 수집된 데이터와 전일 대비 증감 지표만을 근거로 분석하세요.
+
+{FACT_BLOCK}
 
         [오늘의 상위 영상 데이터 (누적 조회수 TOP 10)]
         {top_videos}
@@ -626,7 +645,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         4. [과거 소재 재활용 및 상투적 문구 금지]:
            - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
-        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권 인물이나 단순 축구/가십성 인물 제외)
+        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (국민의힘 등 야권 인물이나 단순 축구/가십성 인물 제외)
         6. [채널 편중 보정]: 인물·이슈의 최대채널 비중이 50%를 넘거나 [편중] 표시가 있으면 '대중적 관심 견인', '관심 집중', '폭발적 반응' 등으로 일반화하지 말고 '○○ 채널(비중 N%) 중심 조회'로 편중 사실을 함께 쓰세요. 채널 수 2곳 이하 이슈에는 '확산' 표현을 쓰지 마세요.
 
         [출력 양식]
@@ -652,7 +671,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
             )
             return response.text
         except Exception as primary_e:
-            print(f"⚠️ {primary_model} 실패 ({primary_e}), {fallback_model}로 재시도")
+            print(f"⚠️ {primary_model} 실패 ({redact_secrets(primary_e)}), {fallback_model}로 재시도")
             response = client.models.generate_content(
                 model=fallback_model,
                 contents=prompt,
@@ -660,7 +679,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
             return response.text
 
     except Exception as e:
-        return f"<b>[AI 심층 분석 생성 오류: {e}]</b>"
+        return f"<b>[AI 심층 분석 생성 오류: {redact_secrets(e)}]</b>"
 
 
 def send_telegram_message(message):
@@ -668,7 +687,7 @@ def send_telegram_message(message):
     chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
 
     if not token or not chat_id:
-        print(f"❌ 텔레그램 전송 실패: 토큰 또는 CHAT_ID 환경 변수가 제대로 설정되지 않았습니다. (TOKEN: {token}, CHAT_ID: {chat_id})")
+        print(f"❌ 텔레그램 전송 실패: 토큰 또는 CHAT_ID 환경 변수가 제대로 설정되지 않았습니다. (TOKEN 설정됨: {'예' if token else '아니오'}, CHAT_ID 설정됨: {'예' if chat_id else '아니오'})")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -702,7 +721,7 @@ def send_telegram_message(message):
             else:
                 print(f"✅ 텔레그램 메시지 전송 성공 (Part {i}/{len(chunks)})")
         except Exception as e:
-            print(f"❌ 텔레그램 통신 에러 (Part {i}/{len(chunks)}): {e}")
+            print(f"❌ 텔레그램 통신 에러 (Part {i}/{len(chunks)}): {redact_secrets(e)}")
 
 
 def run_monitoring():
@@ -721,7 +740,7 @@ def run_monitoring():
             else:
                 no_upload_channels.append(channel_name)
         except Exception as e:
-            print(f"❌ [{channel_name}] 수집 중 예외 발생: {e}")
+            print(f"❌ [{channel_name}] 수집 중 예외 발생: {redact_secrets(e)}")
             failed_channels.append(channel_name)
 
     now_str = datetime.now(KST).strftime("%Y-%m-%d %H:%M")
@@ -913,6 +932,8 @@ def run_monitoring():
         trend_summary_str_for_ai, frame_trend_str_for_ai, 
         issue_summary_str_for_ai, unclassified_summary_text, channel_volume_str_for_ai
     )
+
+    audit_person_titles(ai_insight_text, "ai_insight", PERSON_FACTS)
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
