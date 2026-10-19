@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from google import genai
 
-from person_facts import load_person_facts, build_fact_block, audit_person_titles
+from person_facts import load_person_facts, build_fact_block, audit_person_titles, audit_party_camp
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -645,7 +645,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         4. [과거 소재 재활용 및 상투적 문구 금지]:
            - "전일 대비 유의미한 변동은 나타나지 않았으나"와 같은 상투적 표현 금지.
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
-        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (국민의힘 등 야권 인물이나 단순 축구/가십성 인물 제외)
+        5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권(국민의힘·개혁신당) 인물이나 단순 축구/가십성 인물 제외)
         6. [채널 편중 보정]: 인물·이슈의 최대채널 비중이 50%를 넘거나 [편중] 표시가 있으면 '대중적 관심 견인', '관심 집중', '폭발적 반응' 등으로 일반화하지 말고 '○○ 채널(비중 N%) 중심 조회'로 편중 사실을 함께 쓰세요. 채널 수 2곳 이하 이슈에는 '확산' 표현을 쓰지 마세요.
 
         [출력 양식]
@@ -934,6 +934,7 @@ def run_monitoring():
     )
 
     audit_person_titles(ai_insight_text, "ai_insight", PERSON_FACTS)
+    audit_party_camp(ai_insight_text, "ai_insight", PERSON_FACTS)
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
