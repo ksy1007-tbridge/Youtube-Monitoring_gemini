@@ -5,6 +5,10 @@
   여당 = 더불어민주당 / 야당 = 국민의힘
   여권 = 이재명 정부·더불어민주당·조국혁신당 / 야권 = 국민의힘·개혁신당
   → 조국혁신당은 여권이지만 여당이 아니고, 개혁신당은 야권이지만 야당이 아니다.
+  '범여권'은 여권과 같게 본다(예: '범여권 조국혁신당'은 맞음).
+인물별 진영: persons_current.json의 camp(여권/야권)가 있으면 그것을, 없으면 party에서 유도한다.
+  여당/야당은 정당 표현이므로 그 인물의 party가 여당/야당일 때만 맞다.
+  예) 한동훈(무소속, camp=야권): '야권 한동훈'은 맞고 '야당 한동훈'은 경고.
     따라서 '여당 조국혁신당', '야당 개혁신당'도 엄격 대응표 기준으로 경고한다(로그 경고일 뿐 텍스트는 바꾸지 않음).
 자치단체장은 통상 직책만 쓰지만(예: '추미애 경기도지사'), 정당·여야 표현을 덧붙여도 경고하지 않는다.
 """
@@ -22,7 +26,9 @@ _TITLE_WORDS = [
 ]
 _TITLE_RE = "|".join(re.escape(t) for t in _TITLE_WORDS)
 _CAMP_WORDS = ("여당", "야당", "여권", "야권")
-_CAMP_RE = r"(여당|야당|여권|야권)"
+_CAMP_RE = r"(범여권|여당|야당|여권|야권)"
+# '범여권'은 판정 시 '여권'으로 본다
+_CAMP_NORMALIZE = {"범여권": "여권"}
 # 자치단체장 직함 (통상 '이름 직함'으로 표기)
 _LOCAL_HEAD_RE = re.compile(r"(도지사|지사|시장|구청장|군수|교육감)$")
 _DEFAULT_CAMPS = {
@@ -63,6 +69,30 @@ def allowed_camps(entity: str, facts: dict) -> set:
     return {camp for camp, members in _camps(facts).items() if entity in (members or [])}
 
 
+def person_allowed_camps(person: dict, facts: dict) -> set:
+    """인물이 맞게 불릴 수 있는 여야 표현 집합.
+    - 여권/야권: camp 필드가 있으면 그것, 없으면 party에서 유도
+    - 여당/야당: 정당 표현이므로 party가 여당/야당일 때만 (무소속은 해당 없음)"""
+    party = person.get("party")
+    from_party = allowed_camps(party, facts) if party and party != "무소속" else set()
+    camp = person.get("camp")
+    if camp in ("여권", "야권"):
+        return {camp} | {c for c in from_party if c in ("여당", "야당")}
+    return from_party
+
+
+# 여야 표현과 인물 이름 사이에 올 수 있는 사이말 (짧은 창: 최대 3개, 문장 경계·조사 '을/를/이/가/은/는'은 넘지 않음)
+_FILLER_RE = (r"(?:인사(?:인|이자|로서)?|소속(?:인)?|출신(?:인)?|정치인|중진|인물|"
+              r"(?:대표\s*)?주자|잠룡|(?:전\s*)?[가-힣]{0,3}(?:" + "|".join(re.escape(t) for t in _TITLE_WORDS) + r")(?:인)?|"
+              r"더불어민주당|민주당|국민의힘|국힘|조국혁신당|개혁신당|무소속)")
+
+
+def _person_camp_before_re(name_re: str) -> str:
+    """'<여야표현>[인|이자] [사이말 0~3개] <이름>' — 예: '야당 김민석', '야권 인사인 추미애'."""
+    return (rf"(?<![가-힣]){_CAMP_RE}(?:인|이자|의)?"
+            rf"(?:[ \t]*{_FILLER_RE}){{0,3}}[ \t]*{name_re}(?![가-힣]*(?:을|를)\s*(?:비판|공격|겨냥))")
+
+
 def show_party(person: dict) -> bool:
     """기본 표기 힌트: 명시값 우선, 없으면 자치단체장 직함이면 False(통상 직책만). 금지 규칙이 아니다."""
     if "show_party" in person and person["show_party"] is not None:
@@ -78,6 +108,8 @@ def _person_line(p: dict) -> str:
     parts = [title] if title else []
     if party:
         parts.append("무소속" if party == "무소속" else f"소속 {party}")
+    if p.get("camp"):
+        parts.append(f"{p['camp']} 인사")
     line = f"  · {p['name']}: {', '.join(parts)}"
     if title and not show_party(p):
         line += f" → 통상 표기 '{p['name']} {title}'"
@@ -95,6 +127,8 @@ def build_fact_block(facts: dict = None) -> str:
     for camp in _CAMP_WORDS:
         if camps.get(camp):
             lines.append(f"  · {camp} = {', '.join(camps[camp])}")
+    lines.append("  · '범여권'은 여권과 같은 뜻으로 써도 됨 (예: '범여권 조국혁신당')")
+    lines.append("  · 여당/야당은 정당을 가리키므로 무소속 인물에게 쓰지 말 것 (진영은 여권/야권으로)")
     lines += [
         "- 자치단체장(도지사·시장·구청장·군수 등)은 통상 직책만 쓸 것 (예: '추미애 경기도지사')",
         "- 아래 명단의 인물은 명단의 현재 직함·소속으로 적을 것 ('전 장관', '전 대표' 등 과거 직함 금지):",
@@ -132,13 +166,15 @@ def audit_person_titles(text: str, where: str = "report", facts: dict = None) ->
             used = m.group(1)
             if used.startswith("전 ") or used not in title:
                 warnings.append(f"'{m.group(0)}' (현재 직함: {title or '미상'})")
-        ok_camps = allowed_camps(party, facts) if party else set()
-        if party and party != "무소속":   # 무소속은 여야 대응이 없어 판단하지 않음
-            for pat in (rf"{_CAMP_RE}\s*(?:소속\s*)?(?:(?:{_TITLE_RE})\s*)?{n}",   # '야당 김민석', '야당 최고위원 양향자'
+        ok_camps = person_allowed_camps(p, facts)
+        if ok_camps:   # 진영을 판단할 수 없는 인물(무소속이고 camp 없음 등)은 건너뜀
+            basis = f"진영 {p['camp']}" if p.get("camp") else f"소속 {party}"
+            for pat in (_person_camp_before_re(n),                                    # '야당 김민석', '야권 인사인 추미애 경기도지사'
                         rf"{n}\s*{_CAMP_RE}(?!\s*(?:내|안|에서|에서도|의|과|와|을|를))"):  # '양향자 야당 최고위원'
                 for m in re.finditer(pat, text):
-                    if m.group(1) not in ok_camps:
-                        warnings.append(f"'{m.group(0)}' ({name} 소속 {party} → {'/'.join(sorted(ok_camps)) or '해당 없음'})")
+                    used = _CAMP_NORMALIZE.get(m.group(1), m.group(1))
+                    if used not in ok_camps:
+                        warnings.append(f"'{m.group(0)}' ({name} {basis} → {'/'.join(sorted(ok_camps))})")
         for party_name, names in aliases.items():
             if party_name == "이재명 정부":
                 continue
@@ -169,6 +205,8 @@ def audit_party_camp(text: str, where: str = "report", facts: dict = None) -> li
     for clause in _CLAUSE_SPLIT_RE.split(text):
         for entity in entities:
             wrong = [c for c in _CAMP_WORDS if c not in allowed_camps(entity, facts)]
+            if "여권" in wrong:
+                wrong = ["범여권"] + wrong   # '범여권'은 여권과 같게 판정 (긴 것 먼저)
             if not wrong:
                 continue
             pn = _alt(aliases.get(entity) or [entity])
