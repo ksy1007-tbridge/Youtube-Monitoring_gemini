@@ -18,6 +18,38 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
+# Gemini 3 thinking 설정 (minimal/low/medium/high). thinking_budget은 함께 보내지 않음(400 오류).
+_THINKING_LEVELS = {"minimal", "low", "medium", "high"}
+
+
+def _thinking_from_env(var: str, default: str = "low") -> dict:
+    val = (os.getenv(var) or default).strip().lower()
+    if val not in _THINKING_LEVELS:
+        print(f"⚠️ {var}={val!r} 미지원 → {default} 사용")
+        val = default
+    return {"thinking_level": val}
+
+
+GEMINI_ENTITY_THINKING = _thinking_from_env("GEMINI_ENTITY_THINKING")    # 신규 이슈/인물 자동 추출
+GEMINI_INSIGHT_THINKING = _thinking_from_env("GEMINI_INSIGHT_THINKING")  # AI 심층 분석(generate_ai_insight)
+
+
+def _log_gemini_meta(response, label: str, think_cfg: dict) -> None:
+    """finish_reason·토큰 사용량만 로그 (본문·키 미출력)."""
+    try:
+        cands = getattr(response, "candidates", None) or []
+        fr = getattr(cands[0], "finish_reason", None) if cands else None
+        fr = getattr(fr, "name", fr)
+        um = getattr(response, "usage_metadata", None)
+        g = lambda k: getattr(um, k, None) if um is not None else None
+        print(f"[GEMINI:{label}] finish_reason={fr} tokens: prompt={g('prompt_token_count')} "
+              f"output={g('candidates_token_count')} thinking={g('thoughts_token_count')} "
+              f"total={g('total_token_count')} (thinking_config={think_cfg})")
+        if fr == "MAX_TOKENS":
+            print(f"[WARN] Gemini 응답이 토큰 한도에서 잘림 ({label})")
+    except Exception:
+        pass
+
 
 def redact_secrets(value) -> str:
     """예외 메시지 등에 섞인 API 키·텔레그램 토큰을 가린다 (로그/텔레그램 출력용)."""
@@ -368,13 +400,15 @@ def extract_dynamic_entities(all_titles):
 
         primary_model = 'gemini-3.5-flash-lite'
         fallback_model = 'gemini-3.1-flash-lite'
-        config = {"response_mime_type": "application/json", "temperature": 0.2}
+        config = {"response_mime_type": "application/json", "temperature": 0.2,
+                  "thinking_config": GEMINI_ENTITY_THINKING}
 
         try:
             response = client.models.generate_content(model=primary_model, contents=prompt, config=config)
         except Exception as primary_e:
             print(f"⚠️ [자동 추출] {primary_model} 실패 ({redact_secrets(primary_e)}), {fallback_model}로 재시도")
             response = client.models.generate_content(model=fallback_model, contents=prompt, config=config)
+        _log_gemini_meta(response, "entities", GEMINI_ENTITY_THINKING)
 
         data = _parse_json_loose(getattr(response, "text", None))
         if not isinstance(data, dict):
@@ -663,19 +697,24 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
         primary_model = 'gemini-3.5-flash-lite'
         fallback_model = 'gemini-3.1-flash-lite'
+        insight_config = {"thinking_config": GEMINI_INSIGHT_THINKING}
 
         try:
             response = client.models.generate_content(
                 model=primary_model,
                 contents=prompt,
+                config=insight_config,
             )
+            _log_gemini_meta(response, "insight", GEMINI_INSIGHT_THINKING)
             return response.text
         except Exception as primary_e:
             print(f"⚠️ {primary_model} 실패 ({redact_secrets(primary_e)}), {fallback_model}로 재시도")
             response = client.models.generate_content(
                 model=fallback_model,
                 contents=prompt,
+                config=insight_config,
             )
+            _log_gemini_meta(response, "insight", GEMINI_INSIGHT_THINKING)
             return response.text
 
     except Exception as e:
