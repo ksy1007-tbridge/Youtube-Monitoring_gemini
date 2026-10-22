@@ -111,7 +111,9 @@ def _person_line(p: dict) -> str:
     if p.get("camp"):
         parts.append(f"{p['camp']} 인사")
     line = f"  · {p['name']}: {', '.join(parts)}"
-    if title and not show_party(p):
+    if p.get("preferred"):
+        line += f" → 표기 '{p['preferred']}'"
+    elif title and not show_party(p):
         line += f" → 통상 표기 '{p['name']} {title}'"
     return line
 
@@ -166,6 +168,16 @@ def audit_person_titles(text: str, where: str = "report", facts: dict = None) ->
             used = m.group(1)
             if used.startswith("전 ") or used not in title:
                 warnings.append(f"'{m.group(0)}' (현재 직함: {title or '미상'})")
+        # 정당 직책자(직함이 '<정당> 대표/최고위원' 등)를 '<정당> 인사(인) 이름'으로 낮춰 부른 경우
+        #  예: '국민의힘 인사인 장동혁' (현재 직함: 국민의힘 대표). 뒤에 현재 직함이 바로 붙으면 정상.
+        if party and party != "무소속" and title.startswith(party):
+            cur = re.escape(title[len(party):].strip())
+            for m in re.finditer(rf"{_alt(aliases.get(party) or [party])}\s*인사(?:인|이자)?\s*{n}(?!\s*{cur})", text):
+                warnings.append(f"'{m.group(0)}' (현재 직함: {title})")
+            # '<정당> <다른 직함> 이름' (예: '국민의힘 최고위원 장동혁')
+            for m in re.finditer(rf"{_alt(aliases.get(party) or [party])}\s*({_TITLE_RE})\s*{n}(?![가-힣])", text):
+                if m.group(1).startswith("전 ") or m.group(1) not in title:
+                    warnings.append(f"'{m.group(0)}' (현재 직함: {title})")
         ok_camps = person_allowed_camps(p, facts)
         if ok_camps:   # 진영을 판단할 수 없는 인물(무소속이고 camp 없음 등)은 건너뜀
             basis = f"진영 {p['camp']}" if p.get("camp") else f"소속 {party}"
