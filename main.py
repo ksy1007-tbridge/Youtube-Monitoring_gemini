@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from google import genai
 
-from person_facts import load_person_facts, build_fact_block, audit_person_titles, audit_party_camp
+from person_facts import (load_person_facts, build_fact_block, audit_person_titles, audit_party_camp,
+                          format_audit_footer, append_footer_to_chunks)
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -721,17 +722,8 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         return f"<b>[AI 심층 분석 생성 오류: {redact_secrets(e)}]</b>"
 
 
-def send_telegram_message(message):
-    token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
-
-    if not token or not chat_id:
-        print(f"❌ 텔레그램 전송 실패: 토큰 또는 CHAT_ID 환경 변수가 제대로 설정되지 않았습니다. (TOKEN 설정됨: {'예' if token else '아니오'}, CHAT_ID 설정됨: {'예' if chat_id else '아니오'})")
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    MAX_LEN = 3800
+def split_telegram_chunks(message, footer="", MAX_LEN=3800):
+    """기존 분할 규칙(3800자, 빈 줄 기준) + 점검 꼬리말을 마지막 조각에(넘치면 별도 조각으로)."""
     if len(message) <= MAX_LEN:
         chunks = [message]
     else:
@@ -744,6 +736,20 @@ def send_telegram_message(message):
             message = message[split_idx:].lstrip()
         if message:
             chunks.append(message)
+    return append_footer_to_chunks(chunks, footer, MAX_LEN)
+
+
+def send_telegram_message(message, footer=""):
+    token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
+
+    if not token or not chat_id:
+        print(f"❌ 텔레그램 전송 실패: 토큰 또는 CHAT_ID 환경 변수가 제대로 설정되지 않았습니다. (TOKEN 설정됨: {'예' if token else '아니오'}, CHAT_ID 설정됨: {'예' if chat_id else '아니오'})")
+        return
+
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    
+    chunks = split_telegram_chunks(message, footer)
 
     for i, chunk in enumerate(chunks, 1):
         payload = {
@@ -972,8 +978,9 @@ def run_monitoring():
         issue_summary_str_for_ai, unclassified_summary_text, channel_volume_str_for_ai
     )
 
-    audit_person_titles(ai_insight_text, "ai_insight", PERSON_FACTS)
-    audit_party_camp(ai_insight_text, "ai_insight", PERSON_FACTS)
+    title_warns = audit_person_titles(ai_insight_text, "ai_insight", PERSON_FACTS)
+    camp_warns = audit_party_camp(ai_insight_text, "ai_insight", PERSON_FACTS)
+    audit_footer = format_audit_footer(title_warns, camp_warns, mode="html")
 
     # ----- [보고서 메시지 작성] -----
     msg = f"<b>[여권 성향 유튜브 동향 리포트]</b>\n"
@@ -1060,7 +1067,7 @@ def run_monitoring():
         if vph_rank > 5:
             break
 
-    send_telegram_message(msg)
+    send_telegram_message(msg, audit_footer)
 
 
 if __name__ == "__main__":

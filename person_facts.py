@@ -111,7 +111,9 @@ def _person_line(p: dict) -> str:
     if p.get("camp"):
         parts.append(f"{p['camp']} 인사")
     line = f"  · {p['name']}: {', '.join(parts)}"
-    if title and not show_party(p):
+    if p.get("preferred"):
+        line += f" → 표기 '{p['preferred']}'"
+    elif title and not show_party(p):
         line += f" → 통상 표기 '{p['name']} {title}'"
     return line
 
@@ -166,6 +168,16 @@ def audit_person_titles(text: str, where: str = "report", facts: dict = None) ->
             used = m.group(1)
             if used.startswith("전 ") or used not in title:
                 warnings.append(f"'{m.group(0)}' (현재 직함: {title or '미상'})")
+        # 정당 직책자(직함이 '<정당> 대표/최고위원' 등)를 '<정당> 인사(인) 이름'으로 낮춰 부른 경우
+        #  예: '국민의힘 인사인 장동혁' (현재 직함: 국민의힘 대표). 뒤에 현재 직함이 바로 붙으면 정상.
+        if party and party != "무소속" and title.startswith(party):
+            cur = re.escape(title[len(party):].strip())
+            for m in re.finditer(rf"{_alt(aliases.get(party) or [party])}\s*인사(?:인|이자)?\s*{n}(?!\s*{cur})", text):
+                warnings.append(f"'{m.group(0)}' (현재 직함: {title})")
+            # '<정당> <다른 직함> 이름' (예: '국민의힘 최고위원 장동혁')
+            for m in re.finditer(rf"{_alt(aliases.get(party) or [party])}\s*({_TITLE_RE})\s*{n}(?![가-힣])", text):
+                if m.group(1).startswith("전 ") or m.group(1) not in title:
+                    warnings.append(f"'{m.group(0)}' (현재 직함: {title})")
         ok_camps = person_allowed_camps(p, facts)
         if ok_camps:   # 진영을 판단할 수 없는 인물(무소속이고 camp 없음 등)은 건너뜀
             basis = f"진영 {p['camp']}" if p.get("camp") else f"소속 {party}"
@@ -224,3 +236,78 @@ def audit_party_camp(text: str, where: str = "report", facts: dict = None) -> li
     for w in dict.fromkeys(warnings):
         print(f"[WARN] 정당 여야 표기 점검({where}): {w}")
     return list(dict.fromkeys(warnings))
+
+
+# ---------------------------------------------------------------------------
+# 텔레그램 리포트 하단 점검 꼬리말 (경고가 있을 때만; 본문은 바꾸지 않음)
+# ---------------------------------------------------------------------------
+TELEGRAM_MAX_LEN = 4096
+_WARN_RE = re.compile(r"^'(?P<quote>.*)' \((?P<detail>.*)\)$", re.S)
+_SECRET_LIKE_RE = re.compile(r"(AIza[0-9A-Za-z_\-]{10,}|bot\d+:[0-9A-Za-z_\-]{20,}|gh[pousr]_[0-9A-Za-z]{20,}|github_pat_\w+|\b\d{6,}:[0-9A-Za-z_\-]{20,})")
+
+
+def _short(s: str, n: int) -> str:
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s if len(s) <= n else s[: n - 1].rstrip() + "…"
+
+
+def _footer_item(warning: str, quote_max: int = 20) -> str:
+    """"'장동혁 의원' (현재 직함: 국민의힘 대표)" → "장동혁 의원 → 국민의힘 대표 확인 필요"."""
+    m = _WARN_RE.match(warning or "")
+    if not m:
+        return _short(warning, quote_max + 16) + " 확인 필요"
+    detail = m.group("detail")
+    want = detail.rsplit("→", 1)[-1] if "→" in detail else detail.split(":", 1)[-1]
+    return f"{_short(m.group('quote'), quote_max)} → {_short(want, 16)} 확인 필요"
+
+
+def _footer_safe(s: str, mode: str) -> str:
+    s = _SECRET_LIKE_RE.sub("***", s)
+    if mode == "html":
+        import html as _html
+        return _html.escape(s, quote=False)
+    if mode == "markdown":   # 텔레그램 legacy Markdown 특수문자 제거 (파싱 오류 방지)
+        return re.sub(r"[_*`\[\]]", "", s)
+    return s
+
+
+def format_audit_footer(title_warnings=None, camp_warnings=None, max_items: int = 3,
+                        max_len: int = 300, mode: str = "plain") -> str:
+    """직함·여야 점검 경고를 한 줄 꼬리말로. 경고가 없으면 ''(꼬리말 없음).
+    중복 제거, 최대 max_items건 + '외 N건', 전체 max_len자 이하. 긴 인용·비밀값은 넣지 않는다."""
+    title_items, camp_items = [], []
+    for w in list(title_warnings or []) + list(camp_warnings or []):
+        if not w:
+            continue
+        m = _WARN_RE.match(w)
+        is_title = bool(m) and m.group("detail").startswith("현재")   # '현재 직함/소속: …' → 직함, 나머지(→ 진영) → 여야
+        (title_items if is_title else camp_items).append(_footer_item(w))
+    labels = [lbl for lbl, it in (("직함 점검", title_items), ("여야 점검", camp_items)) if it]
+    if not labels:
+        return ""
+    label = " · ".join(labels)
+    flat = list(dict.fromkeys(title_items + camp_items))
+    total = len(flat)
+    shown = max(1, min(max_items, total))
+    while True:
+        rest = total - shown
+        line = f"⚠ {label}: " + "; ".join(flat[:shown]) + (f" 외 {rest}건" if rest else "")
+        if len(line) <= max_len or shown == 1:
+            break
+        shown -= 1
+    line = _short(line, max_len)
+    return _footer_safe(line, mode)
+
+
+def append_footer_to_chunks(chunks, footer: str, max_len: int = TELEGRAM_MAX_LEN, sep: str = "\n\n") -> list:
+    """분할된 메시지 목록의 마지막 조각에 꼬리말을 붙인다. 넘치면 꼬리말만 별도 조각으로(그래도 넘치면 잘라냄).
+    footer가 비어 있으면 입력을 그대로 돌려준다(경고 없는 날 출력 동일)."""
+    chunks = list(chunks or [])
+    if not footer:
+        return chunks
+    footer = footer if len(footer) <= max_len else footer[: max_len - 1] + "…"
+    if chunks and len(chunks[-1]) + len(sep) + len(footer) <= max_len:
+        chunks[-1] = chunks[-1] + sep + footer
+    else:
+        chunks.append(footer)
+    return chunks
