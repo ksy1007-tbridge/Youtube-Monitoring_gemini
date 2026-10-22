@@ -6,7 +6,8 @@ import os
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from person_facts import audit_party_camp, audit_person_titles, load_person_facts  # noqa: E402
+from person_facts import (audit_party_camp, audit_person_titles, load_person_facts,  # noqa: E402
+                          format_audit_footer, append_footer_to_chunks, TELEGRAM_MAX_LEN)
 
 FACTS = load_person_facts()
 
@@ -121,9 +122,84 @@ def test_warn_only_does_not_modify_text():
     assert text == "야권 인사인 추미애 경기도지사"
 
 
+# ---- 텔레그램 점검 꼬리말 ----
+def _footer(text, **kw):
+    return format_audit_footer(_q(audit_person_titles, text), _q(audit_party_camp, text), **kw)
+
+
+def test_footer_single_warning():
+    f = _footer("국민의힘 장동혁 의원이 발언했다")
+    assert f == "⚠ 직함 점검: 장동혁 의원 → 국민의힘 대표 확인 필요"
+
+
+def test_footer_multiple_dedup_cap():
+    text = ("장동혁 의원. 장동혁 의원. 국민의힘 인사인 장동혁. 추미애 의원. "
+            "야권 인사인 추미애 경기도지사. 야당인 더불어민주당이 반발")
+    f = _footer(text)
+    assert f.startswith("⚠ 직함 점검 · 여야 점검: ")
+    assert f.count("장동혁 의원") == 1          # 중복 제거
+    assert f.count("확인 필요") == 3 and f.endswith("외 2건")
+    assert len(f) <= 300
+
+
+def test_footer_none_when_no_warnings():
+    assert _footer("국민의힘 장동혁 대표와 배현진 의원, 추미애 경기도지사") == ""
+    assert format_audit_footer([], []) == "" and format_audit_footer(None, None) == ""
+
+
+def test_footer_no_long_quote_or_secret():
+    long_q = "야권 인사인 " + "가" * 200
+    f = format_audit_footer(["'장동혁 의원' (현재 직함: 국민의힘 대표)"], [f"'{long_q}' (추미애 진영 여권 → 여권/여당)"])
+    assert len(f) <= 300 and "가" * 30 not in f
+    f2 = format_audit_footer(["'AIzaSyA1234567890abcdefghij' (현재 직함: x)"], [])
+    assert "AIza" not in f2
+
+
+def test_footer_max_len_and_escape():
+    ws = [f"'인물{i} 의원' (현재 직함: 대표)" for i in range(50)]
+    f = format_audit_footer(ws, [], max_len=80)
+    assert len(f) <= 80 and "외 " in f
+    assert "<" not in format_audit_footer(["'<b>장동혁</b> 의원' (현재 직함: 대표)"], [], mode="html").replace("&lt;", "")
+    assert "_" not in format_audit_footer(["'장_동혁 의원' (현재 직함: 대표)"], [], mode="markdown")
+
+
+def test_append_footer_no_footer_identical():
+    chunks = ["a" * 10, "b" * 20]
+    assert append_footer_to_chunks(chunks, "") == chunks
+    assert append_footer_to_chunks([], "") == []
+
+
+def test_append_footer_fits_last_chunk():
+    out = append_footer_to_chunks(["x" * 100], "⚠ f", max_len=200)
+    assert out == ["x" * 100 + "\n\n⚠ f"]
+
+
+def test_append_footer_exact_boundary():
+    foot = "⚠ " + "f" * 8                       # 10자
+    exact = "x" * (200 - 2 - len(foot))          # 마지막 조각 + '\n\n' + 꼬리말 = 정확히 200
+    assert append_footer_to_chunks([exact], foot, 200) == [exact + "\n\n" + foot]
+    over = exact + "x"                            # 1자 초과 → 별도 조각
+    assert append_footer_to_chunks([over], foot, 200) == [over, foot]
+
+
+def test_append_footer_oversized_footer_truncated():
+    out = append_footer_to_chunks(["x" * 50], "f" * 500, max_len=100)
+    assert all(len(c) <= 100 for c in out) and out[0] == "x" * 50
+
+
+def test_telegram_limit_constant():
+    assert TELEGRAM_MAX_LEN == 4096
+
+
 if __name__ == "__main__":
     total, fails = _run()
     for l, t, r in fails:
         print(f"FAIL {l:11s} {t!r} -> {r}")
-    print(f"TOTAL {total} cases, FAILS {len(fails)}")
+    extra = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v) and k != "test_all_cases"]
+    for fn in extra:
+        try:
+            fn()
+        except AssertionError as e:
+            fails.append(("unit", fn.__name__, str(e)))
+    print(f"TOTAL {total} cases + {len(extra)} unit tests, FAILS {len(fails)}")
     sys.exit(1 if fails else 0)
