@@ -49,7 +49,7 @@ def test_pipeline_merges_and_never_double_counts(monkeypatch):
     assert by["생중계 판결 (자동)"]["건수"] == 2 and by["생중계 판결 (자동)"]["조회수"] == 1043000
     section, _, ai, hist = main.build_issue_section(issues, {"persons": {}, "frames": {}}, "2026-10-24", {**main.ISSUE_KEYWORDS, **dyn})
     assert "(통합: 조희대 탄핵)" in section and "생중계 판결" in hist["days"]["2026-10-24"]
-    assert "구조" not in section + ai
+    assert "\uad6c\uc870" not in section + ai  # 금지어 미사용 확인
 
 
 def test_auto_does_not_recount_fixed_videos():
