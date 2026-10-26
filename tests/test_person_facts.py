@@ -7,7 +7,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from person_facts import (audit_party_camp, audit_person_titles, load_person_facts,  # noqa: E402
-                          format_audit_footer, append_footer_to_chunks, TELEGRAM_MAX_LEN)
+                          format_audit_footer, append_footer_to_chunks, TELEGRAM_MAX_LEN,
+                          audit_missing_titles, apply_preferred_title)
 
 FACTS = load_person_facts()
 
@@ -189,6 +190,23 @@ def test_append_footer_oversized_footer_truncated():
 
 def test_telegram_limit_constant():
     assert TELEGRAM_MAX_LEN == 4096
+
+
+def test_missing_title_audit_and_fix():
+    for t in ("장동혁 욕설", "국민의힘 장동혁 욕설", "국힘 장동혁 녹취"):
+        assert _q(audit_missing_titles, t), t
+    for t in ("국민의힘 장동혁 대표 욕설", "장동혁 대표 녹취", "국민의힘 대표 장동혁 녹취", "오세훈 무죄", "추미애 사퇴 청원"):
+        assert not _q(audit_missing_titles, t), t
+    assert apply_preferred_title("장동혁 욕설", FACTS) == "국민의힘 장동혁 대표 욕설"
+    assert apply_preferred_title("국힘 장동혁 녹취", FACTS) == "국민의힘 장동혁 대표 녹취"
+    assert apply_preferred_title("장동혁 대표 욕설", FACTS) == "장동혁 대표 욕설"
+
+
+def test_tracked_persons_choo_oh():
+    by = {p["name"]: p for p in FACTS["persons"]}
+    assert by["추미애"]["title"] == "경기도지사" and by["추미애"]["camp"] == "여권" and by["추미애"].get("tracked")
+    assert by["오세훈"]["title"] == "서울시장" and by["오세훈"]["show_party"] is False and by["오세훈"].get("tracked")
+    assert not _any("오세훈 서울시장") and not _any("추미애 경기도지사")
 
 
 if __name__ == "__main__":
