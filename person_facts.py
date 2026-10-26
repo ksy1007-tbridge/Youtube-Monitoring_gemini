@@ -198,6 +198,57 @@ def audit_person_titles(text: str, where: str = "report", facts: dict = None) ->
     return list(dict.fromkeys(warnings))
 
 
+# ---------------------------------------------------------------------------
+# 이슈명 직함 누락 점검·보정 (preferred 표기가 있는 인물만; 이슈명에만 적용, 본문은 바꾸지 않음)
+#  예: '장동혁 욕설' → '국민의힘 장동혁 대표 욕설' (preferred = '국민의힘 장동혁 대표')
+#  '장동혁 대표 욕설', '국민의힘 대표 장동혁 욕설'처럼 직함이 이미 붙은 경우는 그대로 둔다.
+# ---------------------------------------------------------------------------
+def _bare_name_re(p: dict, facts: dict) -> str:
+    n = re.escape(p["name"])
+    party = p.get("party")
+    party_names = (_aliases(facts).get(party) or [party]) if party and party != "무소속" else []
+    party_pre = rf"(?:{_alt(party_names)}\s*)?" if party_names else ""
+    # 뒤에 직함이 붙지 않은 이름 (앞 직함 여부는 _has_title_before로 따로 본다. 예: '국민의힘 대표 장동혁')
+    return rf"(?<![가-힣]){party_pre}{n}(?!\s*(?:{_TITLE_RE}))"
+
+
+def _has_title_before(text: str, start: int) -> bool:
+    return bool(re.search(rf"(?:{_TITLE_RE})\s*$", text[:start]))
+
+
+def audit_missing_titles(text: str, where: str = "auto_issue_name", facts: dict = None) -> list:
+    """preferred 표기가 있는 인물이 직함 없이 쓰인 곳을 [WARN] 로그로 남긴다(텍스트는 바꾸지 않음)."""
+    if not text:
+        return []
+    facts = facts or load_person_facts()
+    warnings = []
+    for p in facts.get("persons") or []:
+        if not p.get("preferred") or p["name"] not in text:
+            continue
+        for m in re.finditer(_bare_name_re(p, facts), text):
+            if not _has_title_before(text, m.start()):
+                warnings.append(f"'{m.group(0).strip()}' (현재 직함 누락 → {p['preferred']})")
+    for w in dict.fromkeys(warnings):
+        print(f"[WARN] 인물 직함 점검({where}): {w}")
+    return list(dict.fromkeys(warnings))
+
+
+def apply_preferred_title(name: str, facts: dict = None) -> str:
+    """이슈명 속 직함 없는 인물명을 preferred 표기로 바꾼다. 예: '장동혁 욕설' → '국민의힘 장동혁 대표 욕설'."""
+    if not name:
+        return name
+    facts = facts or load_person_facts()
+    out = name
+    for p in facts.get("persons") or []:
+        pref = p.get("preferred")
+        if not pref or p["name"] not in out:
+            continue
+        m = next((m for m in re.finditer(_bare_name_re(p, facts), out) if not _has_title_before(out, m.start())), None)
+        if m:
+            out = out[:m.start()] + pref + out[m.end():]
+    return re.sub(r"\s+", " ", out).strip()
+
+
 # 정당·주체 ↔ 여야 표현 불일치 (동격·나열 표현만 잡아 오탐을 줄임)
 #  경고: '더불어민주당 등 야권', '여당 국민의힘', '야권 조국혁신당', '여권 개혁신당', '야당인 더불어민주당', '조국혁신당 등 야당'
 #  무경고: '여권 내 비판', '국민의힘 등 야권', '조국혁신당 등 여권', '여당인 더불어민주당', '더불어민주당과 야당',

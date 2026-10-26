@@ -2,13 +2,14 @@
 두 저장소(Youtube-Monitoring_gemini / Youtube-Monitoring_grok)에 같은 파일을 둔다. LLM 호출 없음(순수 로직).
 
 - merge_auto_into_fixed: 자동 이슈의 키워드/이름이 고정 이슈 키워드와 겹치면 고정 이슈로 흡수, 자동끼리 겹치면 하나로 합침
-- check_issue_name: 자동 이슈명을 person_facts의 직함·여야 점검에 통과시킴 (경고 시 키워드명으로 교체, 그래도 경고면 제외)
+- check_issue_name: 자동 이슈명을 점검 — 선정적·의문형 표현(썸네일 문구)이면 다른 후보로 교체, 인물명 단독은 이슈명으로 쓰지 않음,
+  직함 없는 인물명은 preferred 표기로 보정(예: '장동혁 욕설' → '국민의힘 장동혁 대표 욕설'), 직함·여야 경고가 남으면 다음 후보, 다 실패하면 제외
 - 이력(issue_history): 날짜별 자동 이슈 기록 → 최근 7일 중 4일 이상(3일 초과) 등장하면 '고정 목록 후보'
 """
 import re
 from datetime import datetime, timedelta
 
-from person_facts import audit_person_titles, audit_party_camp
+from person_facts import audit_person_titles, audit_party_camp, apply_preferred_title, load_person_facts
 
 AUTO_TAG = " (자동)"
 HISTORY_VERSION = 1
@@ -74,12 +75,38 @@ def merge_auto_into_fixed(auto_issues: dict, fixed_issues: dict, extra_fixed_ter
     return merged, absorbed
 
 
-def check_issue_name(name: str, keywords=None, facts: dict = None):
-    """자동 이슈명을 직함·여야 점검에 통과시킨다. 통과한 이름(태그 제외) 또는 None."""
+# 이슈명으로 쓰면 안 되는 선정적·비유적 표현 (썸네일 문구가 사건명처럼 읽히는 것을 막음)
+SENSATIONAL_TERMS = (
+    "무릎", "꿇", "굴복", "몰락", "충격", "경악", "폭로전", "발칵", "박살", "참패", "망했", "망한", "멘붕",
+    "대폭발", "끝장", "개망신", "처참", "소름", "난리", "아수라장", "초토화", "폭망", "탈탈", "작살", "화형",
+)
+_SENSATIONAL_MARK_RE = re.compile(r"[?？!！\"“”‘’']")
+
+
+def is_sensational(name: str) -> bool:
+    """선정적 어휘, 의문·감탄 부호, 따옴표 인용이 있으면 True."""
+    base = strip_tag(name)
+    return bool(_SENSATIONAL_MARK_RE.search(base)) or any(t in base for t in SENSATIONAL_TERMS)
+
+
+def check_issue_name(name: str, keywords=None, facts: dict = None, person_names=None):
+    """자동 이슈명 점검. 통과한 이름(태그 제외, 필요하면 직함 보정) 또는 None.
+    후보 순서: 이슈명 → 키워드. 선정적 표현·인물명 단독 후보는 건너뛴다."""
+    facts = facts or load_person_facts()
+    persons = set(person_names or []) | {p.get("name") for p in facts.get("persons") or [] if p.get("name")}
     base = strip_tag(name)
     for cand in [base] + [k for k in (keywords or []) if k and k != base]:
-        if not (audit_person_titles(cand, "auto_issue_name", facts) or audit_party_camp(cand, "auto_issue_name", facts)):
-            return cand
+        cand = (cand or "").strip()
+        if not cand or cand in persons:
+            continue
+        if is_sensational(cand):
+            print(f"[WARN] 이슈명 선정성 점검(auto_issue_name): '{cand}' → 제외")
+            continue
+        fixed = apply_preferred_title(cand, facts)
+        if fixed != cand:
+            print(f"[INFO] 이슈명 직함 보정(auto_issue_name): '{cand}' → '{fixed}'")
+        if not (audit_person_titles(fixed, "auto_issue_name", facts) or audit_party_camp(fixed, "auto_issue_name", facts)):
+            return fixed
     return None
 
 
