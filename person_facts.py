@@ -362,3 +362,97 @@ def append_footer_to_chunks(chunks, footer: str, max_len: int = TELEGRAM_MAX_LEN
     else:
         chunks.append(footer)
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# [10/27 QA] 리포트 본문 표기 고정 (텍스트를 실제로 바꾼다)
+#  - 장동혁: 항상 '국민의힘 장동혁 대표' ('장동혁 의원'·'최고위원' 등 금지)
+#  - 동명이인(주진우): 리포트 문맥별 직함을 붙여 구분
+#  - 금지어 '구조': '갈등 구조' 등 → '구도/양상'
+# ---------------------------------------------------------------------------
+FIXED_DISPLAY = {"장동혁": "국민의힘 장동혁 대표"}
+
+# 동명이인: context('yeogwon' 여권 리포트 / 'spectrum' 스펙트럼 리포트)별 기본 표시명
+HOMONYMS = {
+    "주진우": {
+        "yeogwon": "주진우 기자",            # 여권 방송인(전 시사IN 기자, 주진우 라이브)
+        "spectrum": "국민의힘 주진우 의원",   # 스펙트럼 리포트 기본값(정치인)
+        "_all": ["주진우 기자", "국민의힘 주진우 의원"],
+        "_hint": "주진우는 동명이인 2명: 주진우 기자(여권 성향 방송인) / 국민의힘 주진우 의원. 반드시 직함을 붙여 구분할 것",
+    },
+}
+
+_JANG_RE = re.compile(
+    r"(?:(?:국민의힘|국힘)\s*)?(?:(?:대표|최고위원|의원)\s*)?장동혁(?:\s*(?:당\s*)?(?:대표|최고위원|의원))?(?:님)?")
+
+# '구조' 대체 (구조대·구조조정·인명 구조 등 구조 활동 의미는 건드리지 않음)
+_GUJO_RULES = [
+    (r"갈등\s*구조", "갈등 양상"),
+    (r"대립\s*구조", "대립 구도"),
+    (r"대결\s*구조", "대결 구도"),
+    (r"권력\s*구조", "권력 지형"),
+    (r"구조적(?:으로|인)?", lambda m: {"구조적으로": "근본적으로", "구조적인": "근본적인"}.get(m.group(0), "근본적")),
+    (r"구조화(?:된|하여|해)?", lambda m: m.group(0).replace("구조화", "정리")),
+    (r"(?<![가-힣])구조(?!대|조정|활동|요청|작업|물|체|에\s*나서)", "구도"),
+    (r"(?<=[가-힣\s])구조(?=[\s은는이가을를의도로와과,.]|$)(?!대|조정)", "구도"),
+]
+
+
+_PARTICLE_PAIRS = {"이": ("이", "가"), "가": ("이", "가"), "은": ("은", "는"), "는": ("은", "는"),
+                   "을": ("을", "를"), "를": ("을", "를"), "과": ("과", "와"), "와": ("과", "와")}
+
+
+def _has_batchim(word: str) -> bool:
+    ch = (word or " ")[-1]
+    return "가" <= ch <= "힣" and (ord(ch) - 0xAC00) % 28 != 0
+
+
+def _sub_particle(pattern, rep, text: str) -> str:
+    """치환 후 바로 뒤 조사(이/가·은/는·을/를·과/와)를 새 말의 받침에 맞춘다."""
+    rx = re.compile(f"(?:{pattern if isinstance(pattern, str) else pattern.pattern})(?P<_pp>[이가은는을를과와](?![가-힣]))?")
+
+    def _r(m):
+        new = rep(m) if callable(rep) else rep
+        pp = m.group("_pp")
+        if pp:
+            pp = _PARTICLE_PAIRS[pp][0 if _has_batchim(new) else 1]
+        return new + (pp or "")
+    return rx.sub(_r, text)
+
+
+def fix_fixed_titles(text: str) -> str:
+    """장동혁 표기를 항상 '국민의힘 장동혁 대표'로 고정."""
+    if not text or "장동혁" not in text:
+        return text
+    return _sub_particle(_JANG_RE, FIXED_DISPLAY["장동혁"], text)
+
+
+def label_homonyms(text: str, context: str = "yeogwon") -> str:
+    """직함 없이 쓰인 동명이인 이름에 문맥별 직함을 붙인다. 이미 직함이 붙어 있으면 그대로."""
+    if not text:
+        return text
+    for name, conf in HOMONYMS.items():
+        if name not in text:
+            continue
+        label = conf.get(context) or conf["_all"][0]
+        pat = rf"(?<![가-힣])(?<!국민의힘 )(?<!국힘 ){re.escape(name)}(?!\s*(?:기자|의원|라이브|{_TITLE_RE}))"
+        text = _sub_particle(pat, label, text)
+    return text
+
+
+def remove_banned_words(text: str) -> str:
+    """금지어 '구조'(갈등 구조 등) 제거/대체."""
+    if not text or "구조" not in text:
+        return text
+    for pat, rep in _GUJO_RULES:
+        text = _sub_particle(pat, rep, text)
+    return text
+
+
+def normalize_report_text(text: str, context: str = "yeogwon") -> str:
+    """리포트 본문·노트 최종 표기 보정: 장동혁 고정 → 동명이인 직함 → 금지어."""
+    return remove_banned_words(label_homonyms(fix_fixed_titles(text), context))
+
+
+def homonym_prompt_lines() -> str:
+    return "\n".join(f"- {c['_hint']}" for c in HOMONYMS.values())

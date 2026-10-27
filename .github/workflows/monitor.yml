@@ -47,3 +47,13 @@ jobs:
         with:
           path: previous_data.json
           key: prev-data-${{ github.run_id }}-${{ github.run_attempt }}
+
+      # [10/27 QA] 수집 원본 CSV 보관 (리포트 수치 대조용)
+      - name: Upload raw collection CSV
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: raw-csv-${{ github.run_id }}-${{ github.run_attempt }}
+          path: raw_csv/*.csv
+          if-no-files-found: warn
+          retention-days: 30
