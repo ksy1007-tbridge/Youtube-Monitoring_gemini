@@ -8,7 +8,8 @@ from datetime import datetime, timedelta, timezone
 import pandas as pd
 from google import genai
 
-from person_facts import (load_person_facts, build_fact_block, audit_person_titles, audit_party_camp,
+from person_facts import (normalize_report_text, FIXED_DISPLAY, HOMONYMS, homonym_prompt_lines,
+                          load_person_facts, build_fact_block, audit_person_titles, audit_party_camp,
                           format_audit_footer, append_footer_to_chunks)
 from issue_tracker import (merge_auto_into_fixed, check_issue_name, update_history, persistent_candidates,
                            format_candidates, normalize_history, strip_tag, name_tokens)
@@ -116,6 +117,66 @@ TRACK_PERSONS = {
 }
 # 고정 인물 편입 전 '(자동)' 키로 저장된 전일 값을 이어 쓰기 위한 대응 (전일 대비 끊김 방지)
 PREV_PERSON_KEY_FALLBACK = {"추미애": "추미애 (자동)", "오세훈": "오세훈 (자동)"}
+
+# [10/27 QA] 증감률 산출 조건: 전일 단독 조회 기준값이 이보다 작거나 없으면 % 대신 '전일 N회 → 금일 M회'만
+MIN_PREV_VIEWS_FOR_PCT = 1000
+# [10/27 QA] 신작 클립: 업로드 1시간 미만 또는 단독 조회 100회 미만이면 증감률·편중% 대신 '신작' 표기 (삭제하지 않음)
+NEW_CLIP_MAX_HOURS = 1.0
+NEW_CLIP_MAX_VIEWS = 100
+RAW_CSV_DIR = os.environ.get("RAW_CSV_DIR", "raw_csv")
+
+
+def person_display_name(p: str) -> str:
+    """리포트 표시명: 고정 직함(장동혁) · 동명이인 직함(주진우) 반영. 인물 키는 그대로 둔다."""
+    base = p.replace(" (자동)", "")
+    suffix = p[len(base):]
+    if base in FIXED_DISPLAY:
+        return FIXED_DISPLAY[base] + suffix
+    if base in HOMONYMS:
+        return HOMONYMS[base]["yeogwon"] + suffix
+    return p
+
+
+def find_prev_person(p: str, prev_persons: dict):
+    """전일 인물 레코드 찾기: 같은 키 → 고정 대응표 → '(자동)' 유무만 다른 키 (유시민 등 증감 누락 방지)."""
+    if not prev_persons:
+        return None, None
+    base = p.replace(" (자동)", "")
+    for k in (p, PREV_PERSON_KEY_FALLBACK.get(p), base, f"{base} (자동)"):
+        if k and k in prev_persons:
+            return k, prev_persons[k]
+    return None, None
+
+
+def person_trend(p_views_standalone: int, prev_rec, is_new_clip: bool):
+    """(리포트 표기, AI 입력) — 증감률은 전일 단독 기준값이 충분할 때만."""
+    if is_new_clip:
+        return " | 🆕신작(업로드 직후·조회 극소, 증감률 산출 제외)", "신작(업로드 직후, 증감률 제외)"
+    if prev_rec is None:
+        return " | 전일 기록 없음", "전일 기록 없음(증감률 없음)"
+    if "views_standalone" not in prev_rec:
+        return " | 전일 단독 기준값 없음", "전일 단독 기준값 없음(증감률 없음)"
+    prev_v = int(prev_rec.get("views_standalone") or 0)
+    if prev_v < MIN_PREV_VIEWS_FOR_PCT:
+        return (f" | 전일 {prev_v:,}회 → 금일 {p_views_standalone:,}회",
+                f"전일 단독 {prev_v:,}회 -> 금일 단독 {p_views_standalone:,}회 (전일 기준값 작아 증감률 생략)")
+    pct = round(((p_views_standalone - prev_v) / prev_v) * 100, 1)
+    sign = "+" if pct >= 0 else ""
+    return (f" | 전일 {prev_v:,}회 → {sign}{pct}%",
+            f"전일 단독 {prev_v:,}회 -> 금일 단독 {p_views_standalone:,}회 ({sign}{pct}%)")
+
+
+def save_raw_csv(df, now_kst) -> str:
+    """수집 원본(중복 제거 전)을 CSV로 저장 — Actions artifact 대조용."""
+    try:
+        os.makedirs(RAW_CSV_DIR, exist_ok=True)
+        path = os.path.join(RAW_CSV_DIR, f"yt_politics_24h_{now_kst.strftime('%Y%m%d_%H%M')}.csv")
+        df.drop(columns=[c for c in ("게시일시_dt",) if c in df.columns]).to_csv(path, index=False, encoding="utf-8-sig")
+        print(f"ℹ️ 원본 CSV 저장: {path} ({len(df)}행)")
+        return path
+    except Exception as e:
+        print(f"원본 CSV 저장 실패: {redact_secrets(e)}")
+        return ""
 
 # ---------------------------------------------------------
 # [이슈 키워드 그룹 재정의 - 오탐 제거 및 구조화]
@@ -283,14 +344,15 @@ def format_concentration_report(conc) -> str:
     if not conc:
         return ""
     flag = " ⚠편중" if conc["flagged"] else ""
-    return f" | 최대채널 {html.escape(conc['top_ch'])} {conc['top_share']}%{flag}"
+    return f" | 최대채널 {html.escape(conc['top_ch'])} {conc['top_share']}%(단독 기준){flag}"
 
 
 def format_concentration_ai(conc) -> str:
     if not conc:
         return ""
     flag = " [편중]" if conc["flagged"] else ""
-    return f" | 채널집중: {conc['top_ch']} {conc['top_share']}%, 상위2개 영상 {conc['top2_vid_share']}%{flag}"
+    # [10/27 QA] 편중 %는 단독(종합방송 제외) 조회 한 기준만 노출 — 상위2개 영상 비중은 판정에만 쓰고 AI 입력에서 뺌 (72.7% vs 99.5% 불일치 방지)
+    return f" | 채널집중(단독 기준): {conc['top_ch']} {conc['top_share']}%{flag}"
 
 
 def match_titles(series, keywords):
@@ -631,7 +693,7 @@ def build_issue_section(df_issues, prev_data, date_str, issue_keywords=None):
         if row.get("single_channel"):
             merged_note += f" ⚠단일 채널 주의({conc['top_ch']} {conc['top_share']}%)"
         lines.append(
-            f"• {html.escape(str(row['이슈명']))} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_report(conc)}{html.escape(merged_note)}"
+            f"• {html.escape(normalize_report_text(str(row['이슈명'])))} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_report(conc)}{html.escape(merged_note)}"
         )
         lines_ai.append(
             f"- {row['이슈명']}: {row['건수']}건 | {row['채널수']}채널 | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_ai(conc)}{merged_note}"
@@ -815,6 +877,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
 
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 
+        homonym_hint = homonym_prompt_lines().replace("\n", " ").lstrip("- ")
         prompt = f"""
         당신은 수치 데이터와 실시간 프레임 전환을 정교하게 분석하는 수석 데이터 분석가입니다.
         과거 어제의 분석 프레임이나 지나간 이슈를 재활용하지 말고, 오직 오늘 수집된 데이터와 전일 대비 증감 지표만을 근거로 분석하세요.
@@ -858,6 +921,9 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
            - 호칭: 이재명은 현직 대한민국 대통령입니다. 반드시 '이재명 대통령'으로 표기하세요.
         5. [키워드 범주 제한]: '주요 언급 키워드'는 오늘 상위 영상 제목에 실제 등장한 [주요 인물, 핵심 정치 이슈, 법적 대응/대립 사건]만 8~10개 엄선하세요. (야권(국민의힘·개혁신당) 인물이나 단순 축구/가십성 인물 제외)
         6. [채널 편중 보정]: 인물·이슈의 최대채널 비중이 50%를 넘거나 [편중] 표시가 있으면 '대중적 관심 견인', '관심 집중', '폭발적 반응' 등으로 일반화하지 말고 '○○ 채널(비중 N%) 중심 조회'로 편중 사실을 함께 쓰세요. 채널 수 2곳 이하 이슈에는 '확산' 표현을 쓰지 마세요.
+        7. [수치 재계산 금지 — 10/27 QA]: 편중 비중(%)은 입력에 '(단독 기준)'으로 적힌 값만 그대로 쓰고 새로 계산하거나 다른 분모(풀버전 포함·상위 영상 비중)로 바꾸지 마세요. 증감률은 [전일 대비 주요 지표 증감 추세]에 %가 적힌 인물만 쓰고, '증감률 생략/없음/신작'으로 적힌 인물에는 %를 만들지 마세요.
+        8. [표기 고정]: 장동혁은 반드시 '국민의힘 장동혁 대표'('장동혁 의원'·'최고위원' 금지). {homonym_hint} '구조'라는 단어(예: '갈등 구조')는 쓰지 말고 '구도'·'양상'으로 쓰세요.
+        9. [이슈 집계 범위]: 이슈 건수·조회수는 종합방송(풀버전) 제외 집계이므로 조회 TOP10의 풀버전 조회수와 직접 비교하지 마세요.
 
         [출력 양식]
         <b>[AI 데이터 심층 분석]</b>
@@ -975,6 +1041,7 @@ def run_monitoring():
         return
 
     df = pd.DataFrame(all_data)
+    save_raw_csv(df, datetime.now(KST))
     # 같은 방송의 본방송·재업로드 중복 제거 (이슈·인물·프레임 집계 전에 1건으로)
     df, _dedupe_log = dedupe_reuploads(df)
     df = df.reset_index(drop=True)
@@ -1111,19 +1178,15 @@ def run_monitoring():
         }
 
         if p_cnt > 0:
-            prev_v = 0
-            diff_str = ""
-            prev_key = p if p in prev_persons else PREV_PERSON_KEY_FALLBACK.get(p)
-            if prev_key in prev_persons:
-                prev_v = prev_persons[prev_key].get("views_standalone", prev_persons[prev_key].get("views", 0))
-                if prev_v > 0:
-                    pct = round(((p_views_standalone - prev_v) / prev_v) * 100, 1)
-                    sign = "+" if pct >= 0 else ""
-                    diff_str = f" | 전일 {prev_v:,}회 -> {sign}{pct}%"
-                    trend_summary_for_ai.append(f"- {p}: 전일 단독 {prev_v:,}회 -> 금일 단독 {p_views_standalone:,}회 ({sign}{pct}%)")
-                else:
-                    diff_str = " | 전일 0회"
-                    trend_summary_for_ai.append(f"- {p}: 전일 단독 0회 -> 금일 단독 {p_views_standalone:,}회 (신규 진입/급증)")
+            disp = person_display_name(p)
+            _, prev_rec = find_prev_person(p, prev_persons)
+            prev_v = int((prev_rec or {}).get("views_standalone") or 0)
+            # 신작: 단독 영상이 모두 업로드 1시간 미만이거나 단독 조회 100회 미만 (예: 정청래 37회·업로드 6분 후)
+            is_new_clip = len(sel_standalone) > 0 and (
+                p_views_standalone < NEW_CLIP_MAX_VIEWS
+                or bool((sel_standalone["경과시간_hours"] < NEW_CLIP_MAX_HOURS).all()))
+            diff_str, trend_ai = person_trend(p_views_standalone, prev_rec, is_new_clip)
+            trend_summary_for_ai.append(f"- {disp}: {trend_ai}")
 
             if len(sel_omnibus) > 0 and len(sel_standalone) == 0:
                 views_disp = f"단독 0회 (보정합산 {p_views_weighted:,}회 | 풀버전 {len(sel_omnibus)}건 포함 {p_views_total:,}회)"
@@ -1132,11 +1195,12 @@ def run_monitoring():
             else:
                 views_disp = f"단독 {p_views_standalone:,}회"
 
-            conc = channel_concentration(sel_standalone)
-            line_text = f"• {html.escape(p)} : <b>{p_cnt}건</b> ({views_disp}{format_concentration_report(conc)}{diff_str})"
+            conc = None if is_new_clip else channel_concentration(sel_standalone)   # 편중 %: 단독 기준 한 가지
+            cnt_disp = f"{p_cnt}건" if len(sel_omnibus) == 0 else f"{p_cnt}건(단독 {len(sel_standalone)}+종합 {len(sel_omnibus)})"
+            line_text = f"• {html.escape(disp)} : <b>{cnt_disp}</b> ({views_disp}{format_concentration_report(conc)}{diff_str})"
             # 정렬 우선순위 키: 1순위 p_views_standalone(단독 조회수), 2순위 p_views_weighted(보정 조회수)
             person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_weighted, p_views_total, line_text))
-            person_summary_for_ai.append(f"- {p}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회){format_concentration_ai(conc)}")
+            person_summary_for_ai.append(f"- {disp}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회){format_concentration_ai(conc)}")
 
     # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
     person_summary_lines.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
@@ -1159,6 +1223,7 @@ def run_monitoring():
         issue_summary_str_for_ai, unclassified_summary_text, channel_volume_str_for_ai
     )
 
+    ai_insight_text = normalize_report_text(ai_insight_text, "yeogwon")   # 장동혁 직함 고정·동명이인·금지어 '구조'
     title_warns = audit_person_titles(ai_insight_text, "ai_insight", PERSON_FACTS)
     camp_warns = audit_party_camp(ai_insight_text, "ai_insight", PERSON_FACTS)
     audit_footer = format_audit_footer(title_warns, camp_warns, mode="html")
@@ -1180,6 +1245,7 @@ def run_monitoring():
     msg += f"{frame_summary_text}\n\n"
 
     msg += f"<b>■ 주요 이슈 언급 (건수 | 채널 수 | 조회수)</b>\n"
+    msg += "※ 종합방송(풀버전/OMNIBUS) 제외 집계 — 인물란(풀버전 포함)·조회 TOP10과 분모가 다름\n"
     msg += f"{issue_section_text}\n\n"
 
     msg += f"<b>■ 이슈 미분류 상위 5 (새 쟁점 후보)</b>\n"
