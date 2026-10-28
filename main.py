@@ -982,7 +982,16 @@ def split_telegram_chunks(message, footer="", MAX_LEN=3800):
     return append_footer_to_chunks(chunks, footer, MAX_LEN)
 
 
-def send_telegram_message(message, footer=""):
+def wrap_expandable_chunk(chunk: str, *, part: int = 1, total: int = 1) -> str:
+    """원문 리포트를 텔레그램 접힌 인용(blockquote expandable)으로 감싼다."""
+    part_s = f" ({part}/{total})" if total > 1 else ""
+    return (
+        f"<b>원문 리포트</b>{part_s} · 탭해서 펼치기\n"
+        f"<blockquote expandable>{chunk}</blockquote>"
+    )
+
+
+def send_telegram_message(message, footer="", *, expandable=False):
     token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -991,13 +1000,16 @@ def send_telegram_message(message, footer=""):
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    
-    chunks = split_telegram_chunks(message, footer)
+
+    # 접기 래퍼(~80자) 여유를 위해 expandable일 때 조금 더 짧게 분할
+    max_len = 3700 if expandable else 3800
+    chunks = split_telegram_chunks(message, footer, MAX_LEN=max_len)
 
     for i, chunk in enumerate(chunks, 1):
+        text = wrap_expandable_chunk(chunk, part=i, total=len(chunks)) if expandable else chunk
         payload = {
             "chat_id": chat_id,
-            "text": chunk,
+            "text": text,
             "parse_mode": "HTML",
             "disable_web_page_preview": True
         }
@@ -1355,7 +1367,7 @@ def run_monitoring():
 
     # 한눈 카드 먼저, 원문 리포트 이어짐 (텔레그램 메시지 2통+)
     send_telegram_message(hanun_html)
-    send_telegram_message(msg, audit_footer)
+    send_telegram_message(msg, audit_footer, expandable=True)
 
 
 if __name__ == "__main__":

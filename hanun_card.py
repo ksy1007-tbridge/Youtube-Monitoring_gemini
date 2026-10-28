@@ -19,7 +19,7 @@ MAX_ILLUSION = 3
 MEDIA_SCANDEL_KEYS = ("주진우", "김어준")
 
 # 신규 속보 이름 힌트 (전일 issues 키가 없을 때·보조)
-NEW_BREAKING_RE = re.compile(r"속보|구속\s*연장|긴급|속보")
+NEW_BREAKING_RE = re.compile(r"속보|구속\s*연장|긴급")
 
 DYNAMIC_TAG = " (자동)"
 
