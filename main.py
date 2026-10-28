@@ -13,6 +13,7 @@ from person_facts import (normalize_report_text, FIXED_DISPLAY, HOMONYMS, homony
                           format_audit_footer, append_footer_to_chunks)
 from issue_tracker import (merge_auto_into_fixed, check_issue_name, update_history, persistent_candidates,
                            format_candidates, normalize_history, strip_tag, name_tokens)
+from hanun_card import build_hanun_card, issues_snapshot
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -1153,6 +1154,7 @@ def run_monitoring():
 
     curr_persons_data = {}
     person_summary_lines = []
+    hanun_person_rows = []
     person_summary_for_ai = []
     trend_summary_for_ai = []
 
@@ -1201,6 +1203,23 @@ def run_monitoring():
             # 정렬 우선순위 키: 1순위 p_views_standalone(단독 조회수), 2순위 p_views_weighted(보정 조회수)
             person_summary_lines.append((p, p_cnt, p_views_standalone, p_views_weighted, p_views_total, line_text))
             person_summary_for_ai.append(f"- {disp}: {p_cnt}건 (금일 단독 {p_views_standalone:,}회 / 전일 단독 {prev_v:,}회 / 보정합산 {p_views_weighted:,}회){format_concentration_ai(conc)}")
+            # 한눈 카드용
+            _pct = None
+            if (not is_new_clip) and prev_rec is not None and "views_standalone" in prev_rec:
+                _pv = int(prev_rec.get("views_standalone") or 0)
+                if _pv >= MIN_PREV_VIEWS_FOR_PCT:
+                    _pct = round(((p_views_standalone - _pv) / _pv) * 100, 1)
+            hanun_person_rows.append({
+                "name": p,
+                "display": disp,
+                "cnt": p_cnt,
+                "views_standalone": p_views_standalone,
+                "top_share": (conc or {}).get("top_share") if conc else None,
+                "n_ch": (conc or {}).get("n_ch") if conc else sel_standalone["채널명"].nunique() if len(sel_standalone) else 0,
+                "pct_change": _pct,
+                "trend_short": (f"{_pct:+.0f}%" if _pct is not None else ("신작" if is_new_clip else "")),
+                "from_issue": False,
+            })
 
     # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
     person_summary_lines.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
@@ -1210,11 +1229,31 @@ def run_monitoring():
     person_summary_str_for_ai = "\n".join(person_summary_for_ai) if person_summary_for_ai else "특이 사항 없음"
     trend_summary_str_for_ai = "\n".join(trend_summary_for_ai) if trend_summary_for_ai else "전일 데이터 대비 유의미한 변동 없음"
 
+    # ----- [한눈 카드: 이슈 스냅샷·인물 보강] -----
+    issue_records = df_issues.to_dict("records") if df_issues is not None and len(df_issues) else []
+    for row in issue_records:
+        if "한동훈" in str(row.get("이슈명") or ""):
+            for pr in hanun_person_rows:
+                if "한동훈" in str(pr.get("name") or ""):
+                    pr["from_issue"] = True
+    prev_issues = (prev_data or {}).get("issues") if prev_data else None
+    hanun_top_rows = df_top.head(10).to_dict("records") if df_top is not None and len(df_top) else []
+    hanun_uncl_rows = df_unclassified_top5.to_dict("records") if df_unclassified_top5 is not None and len(df_unclassified_top5) else []
+    hanun_html = build_hanun_card(
+        now_str=now_str,
+        issue_rows=issue_records,
+        prev_issues=prev_issues,
+        person_rows=hanun_person_rows,
+        df_top_rows=hanun_top_rows,
+        unclassified_rows=hanun_uncl_rows,
+    )
+
     save_current_data({
         "timestamp": now_str,
         "persons": curr_persons_data,
         "frames": curr_frames_data,
         "issue_history": issue_history,
+        "issues": issues_snapshot(issue_records),
     })
 
     ai_insight_text = generate_ai_insight(
@@ -1314,6 +1353,8 @@ def run_monitoring():
         if vph_rank > 5:
             break
 
+    # 한눈 카드 먼저, 원문 리포트 이어짐 (텔레그램 메시지 2통+)
+    send_telegram_message(hanun_html)
     send_telegram_message(msg, audit_footer)
 
 
