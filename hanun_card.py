@@ -8,8 +8,13 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # 카드 전용 편중 임계 (리포트 ⚠편중 50%와 별개)
 HANUN_BIAS_PCT = 60.0
-# 이 채널 수 이하면 확산 기본값 아님 (신규 예외로만 확산 가능)
-HANUN_MIN_CHANNELS_SPREAD = 4
+# 소수 채널 예외: 채널 수가 이 값 미만(=1~2채널)이면 점유율과 무관하게 내부·편중.
+# 1~2채널 이슈는 사실상 특정 채널 기획이므로 편중으로 본다. 3채널 이상은
+# 최대 채널 점유율 ≥ HANUN_BIAS_PCT(60%) 규칙만 적용한다.
+# (예: 김어준 논란 9건·3채널·최대 49.2% → 확산. 10/29 카드 오분류 수정)
+HANUN_MIN_CHANNELS_SPREAD = 3
+# 인물 급등/급락 표기 임계(전일 대비 %)
+HANUN_PERSON_SWING_PCT = 50.0
 # 한 줄·칸에 올릴 최대 줄 수
 MAX_SPREAD = 4
 MAX_INTERNAL = 5
@@ -57,7 +62,11 @@ def classify_issue(
     is_new: bool,
 ) -> Tuple[str, bool]:
     """반환: ('spread'|'internal', used_new_exception).
-    신규 예외는 편중·소수 채널을 덮어쓸 때만 ※표기한다."""
+    규칙(문서화된 예외 외 없음):
+      1) 최대 채널 점유율 ≥ 60% → 내부·편중
+      2) 채널 수 < 3 (1~2채널) → 내부·편중 (소수 채널 예외)
+      3) 그 외 → 확산
+    신규 속보는 1)·2)를 덮어쓰고 ※표기한다."""
     biased = top_share is not None and top_share >= HANUN_BIAS_PCT
     few_channels = channels < HANUN_MIN_CHANNELS_SPREAD
     if biased or few_channels:
@@ -102,29 +111,81 @@ def _person_internal_line(p: dict) -> str:
     return f"• <b>{disp}</b> — {'·'.join(bits)}{(' · ' + note) if note else ''}"
 
 
+def _has_batchim(word: str) -> bool:
+    """마지막 한글 음절의 받침 유무. 숫자·영문은 읽는 소리 기준으로 근사."""
+    w = re.sub(r"[\s\)\]\}\"'”’]+$", "", str(word or ""))
+    if not w:
+        return False
+    ch = w[-1]
+    if "가" <= ch <= "힣":
+        return (ord(ch) - 0xAC00) % 28 != 0
+    if ch.isdigit():
+        return ch in "013678"  # 영·일·삼·육·칠·팔 받침 있음
+    return ch.lower() in "lmnr"
+
+
+def josa(word: str, pair: str) -> str:
+    """word + 맞는 조사. pair 예: '이/가', '은/는', '을/를', '과/와'."""
+    with_b, without_b = pair.split("/")
+    return f"{word}{with_b if _has_batchim(word) else without_b}"
+
+
+def person_swings(person_rows: Sequence[dict]) -> Tuple[List[dict], List[dict]]:
+    """전일 대비 ±50% 이상 인물. (급등, 급락)."""
+    ups, downs = [], []
+    for p in person_rows:
+        pct = p.get("pct_change")
+        if pct is None:
+            continue
+        pct = float(pct)
+        if pct >= HANUN_PERSON_SWING_PCT:
+            ups.append(p)
+        elif pct <= -HANUN_PERSON_SWING_PCT:
+            downs.append(p)
+    # 급등은 '조회 견인' 판단용이므로 단독 조회수 큰 순(동률 시 변동폭)
+    ups.sort(key=lambda p: (int(p.get("views_standalone") or 0), float(p["pct_change"])), reverse=True)
+    downs.sort(key=lambda p: float(p["pct_change"]))
+    return ups, downs
+
+
+def _person_swing_phrase(p: dict) -> str:
+    disp = strip_auto(p.get("display") or p.get("name") or "")
+    pct = float(p["pct_change"])
+    share = p.get("top_share")
+    s = f"{disp} {pct:+.0f}%"
+    if share is not None and float(share) >= HANUN_BIAS_PCT:
+        s += f"(편중 {float(share):.0f}%)"
+    return s
+
+
 def build_one_liner(
     spread: Sequence[dict],
-    internal: Sequence[dict],
-    person_notes: Sequence[str],
+    person_rows: Sequence[dict] = (),
 ) -> str:
-    """담백한 한 줄. 멋 부리지 않음."""
-    spread_name = strip_auto(spread[0]["이슈명"]) if spread else ""
-    media = [p for p in internal if p.get("kind") == "media"]
-    media_name = strip_auto(media[0].get("display") or media[0].get("name") or "") if media else ""
-    cool = [n for n in person_notes if n]
-
-    if spread_name and media_name and cool:
-        return f"여권 유튜브는 {spread_name}이 넓게 깔리고, {media_name} 스캔들이 조회를 끌어올린다. {cool[0]}."
-    if spread_name and media_name:
-        return f"여권 유튜브는 {spread_name}이 넓게 깔리고, {media_name} 스캔들이 조회를 끌어올린다."
-    if spread_name and cool:
-        return f"여권 유튜브는 {spread_name}이 넓게 깔린다. {cool[0]}."
-    if spread_name:
-        return f"여권 유튜브는 {spread_name}이 넓게 깔린다."
-    if media_name:
-        return f"여권 유튜브는 {media_name} 스캔들 쪽 조회가 두드러진다."
-    if cool:
-        return f"여권 유튜브는 {cool[0]}."
+    """담백한 한 줄. 이슈 문장과 인물 급등 문장을 분리한다.
+    - 이슈: 확산 상위 최대 2개 '넓게 깔린다' (조회 견인 표현 쓰지 않음)
+    - 인물: 전일 대비 +50% 이상만 '조회 급등'으로, 최대 채널 ≥60%면 (편중 N%) 표기
+      → 편중 급등만 있으면 '특정 채널 몰림'으로 서술해 과장 방지
+    - 특정 인물(예: 김어준)을 이슈 이름만으로 '조회를 끌어올린다'고 쓰지 않는다."""
+    names = [strip_auto(r["이슈명"]) for r in spread[:2] if r.get("이슈명")]
+    parts = []
+    if names:
+        if len(names) == 2:
+            subj = f"{josa(names[0], '과/와')} {names[1]}"
+        else:
+            subj = names[0]
+        parts.append(f"여권 유튜브는 {josa(subj, '이/가')} 넓게 깔린다.")
+    ups, _downs = person_swings(person_rows)
+    if ups:
+        top = ups[:2]
+        phr = ", ".join(_person_swing_phrase(p) for p in top)
+        all_biased = all(
+            p.get("top_share") is not None and float(p["top_share"]) >= HANUN_BIAS_PCT for p in top
+        )
+        tail = "특정 채널 몰림이다" if all_biased else "조회가 뛰었다"
+        parts.append(f"인물은 전일 대비 {phr}로 {tail}.")
+    if parts:
+        return " ".join(parts)
     return "오늘 여권 유튜브에서 뚜렷한 확산 이슈는 없습니다."
 
 
@@ -180,7 +241,6 @@ def build_hanun_card(
 
     # 인물: 미디어 스캔들·한동훈·±50% 급변
     person_internal = []
-    cool_notes = []
     handong_seen = False
     for p in person_rows:
         key = strip_auto(p.get("name") or "")
@@ -205,7 +265,6 @@ def build_hanun_card(
                 person_internal.append({**p, "display": disp, "note": note, "kind": kind})
         elif pct is not None and abs(pct) >= 50:
             sign = "+" if pct >= 0 else ""
-            cool_notes.append(f"{disp}는 전일 대비 {sign}{pct:.0f}%")
             if pct <= -50:
                 person_internal.append({
                     **p, "display": disp,
@@ -239,7 +298,7 @@ def build_hanun_card(
         deduped.append(p)
     person_internal = deduped
 
-    one = html.escape(build_one_liner(spread[:1], person_internal, cool_notes))
+    one = html.escape(build_one_liner(spread[:2], person_rows))
 
     lines = [
         f"<b>[여권 유튜브 한눈 카드]</b>",
