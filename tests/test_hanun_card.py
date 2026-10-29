@@ -15,11 +15,15 @@ class HanunCardRules(unittest.TestCase):
         self.assertEqual(classify_issue(channels=8, top_share=38.2, is_new=False), ("spread", False))
         # 70% → 내부
         self.assertEqual(classify_issue(channels=3, top_share=69.7, is_new=False), ("internal", False))
-        # 56.6% + 3채널 → 내부 (채널 수 부족, 임계 미만이어도)
-        self.assertEqual(classify_issue(channels=3, top_share=56.6, is_new=False), ("internal", False))
+        # 56.6% + 3채널 → 확산 (60% 미만, 3채널은 소수 채널 예외 아님)
+        self.assertEqual(classify_issue(channels=3, top_share=56.6, is_new=False), ("spread", False))
+        # 2채널 → 내부 (소수 채널 예외)
+        self.assertEqual(classify_issue(channels=2, top_share=50.0, is_new=False), ("internal", False))
+        # 10/29 김어준 논란: 9건·3채널·최대 49.2% → 확산
+        self.assertEqual(classify_issue(channels=3, top_share=49.2, is_new=False), ("spread", False))
 
     def test_new_exception_overrides(self):
-        bucket, exc = classify_issue(channels=3, top_share=56.6, is_new=True)
+        bucket, exc = classify_issue(channels=2, top_share=56.6, is_new=True)
         self.assertEqual(bucket, "spread")
         self.assertTrue(exc)
         bucket2, exc2 = classify_issue(channels=3, top_share=70.0, is_new=True)
@@ -61,10 +65,10 @@ class HanunCardRules(unittest.TestCase):
             df_top_rows=[{"프레임": "종합방송", "조회수": 1183015, "채널명": "뉴스공장", "제목": "풀버전"}],
             unclassified_rows=[{"조회수": 490588, "제목": "프랑스 사태 한편으로 완벽 이해! [코너별 다시보기]"}],
         )
-        # 김건희 = 신규 예외로 확산
+        # 김건희 = 3채널·56.6% → 규칙상 확산 (예외 불필요)
         spread_part = card.split("내부·편중")[0]
         self.assertIn("김건희 구속 연장", spread_part)
-        self.assertIn("신규 속보 예외", spread_part)
+        self.assertNotIn("신규 속보 예외", spread_part)
         self.assertIn("조희대", spread_part)
         # 한동훈·유시민은 내부
         internal_part = card.split("내부·편중")[1]
@@ -73,6 +77,58 @@ class HanunCardRules(unittest.TestCase):
         self.assertIn("주진우", internal_part)
         self.assertIn("종합방송", card)
         self.assertIn("원문 리포트가 이어집니다", card)
+
+    def test_josa(self):
+        from hanun_card import josa
+        self.assertEqual(josa("이태원 참사 4주기", "이/가"), "이태원 참사 4주기가")
+        self.assertEqual(josa("김민석", "은/는"), "김민석은")
+        self.assertEqual(josa("유시민", "이/가"), "유시민이")
+        self.assertEqual(josa("오세훈", "과/와"), "오세훈과")
+        self.assertEqual(josa("조희대/사법부", "이/가"), "조희대/사법부가")
+
+    def _card_1029(self):
+        issues = [
+            {"이슈명": "이태원 참사 4주기", "건수": 12, "채널수": 7, "조회수": 520000,
+             "concentration": {"top_share": 35.0}, "is_auto": True},
+            {"이슈명": "김어준 논란", "건수": 9, "채널수": 3, "조회수": 419000,
+             "concentration": {"top_share": 49.2}, "is_auto": False},
+        ]
+        persons = [
+            {"name": "김민석", "display": "김민석", "views_standalone": 300000,
+             "top_share": 91.4, "n_ch": 2, "pct_change": 131.0},
+            {"name": "유시민", "display": "유시민", "views_standalone": 500000,
+             "top_share": 80.0, "n_ch": 3, "pct_change": 385.7},
+            {"name": "오세훈", "display": "오세훈", "views_standalone": 400000,
+             "top_share": 40.0, "n_ch": 5, "pct_change": 122.0},
+            {"name": "김어준", "display": "김어준", "views_standalone": 200000,
+             "top_share": 45.0, "n_ch": 4, "pct_change": -33.7},
+        ]
+        return build_hanun_card(now_str="2026-10-29 14:50", issue_rows=issues,
+                                prev_issues={"이태원 참사 4주기": {}, "김어준 논란": {}},
+                                person_rows=persons)
+
+    def test_1029_kim_eojun_issue_spread(self):
+        card = self._card_1029()
+        spread_part = card.split("내부·편중")[0]
+        self.assertIn("<b>김어준 논란</b>", spread_part)
+        self.assertNotIn("김어준 논란", card.split("내부·편중")[1])
+
+    def test_1029_one_liner(self):
+        card = self._card_1029()
+        one = card.split("<b>한 줄</b>")[1].split("<b>확산")[0]
+        self.assertIn("이태원 참사 4주기와 김어준 논란이 넓게 깔린다", one)
+        self.assertNotIn("4주기이", one)
+        self.assertNotIn("끌어올린다", one)
+        self.assertNotIn("김민석는", one)
+        # 급등 상위는 유시민·오세훈, 편중 표기
+        self.assertIn("유시민 +386%(편중 80%)", one)
+        self.assertIn("오세훈 +122%", one)
+        self.assertNotIn("김어준 +", one)
+
+    def test_one_liner_biased_only(self):
+        from hanun_card import build_one_liner
+        one = build_one_liner([], [{"name": "김민석", "pct_change": 131.0, "top_share": 91.4}])
+        self.assertEqual(one, "인물은 전일 대비 김민석 +131%(편중 91%)로 특정 채널 몰림이다.")
 
     def test_snapshot_keys(self):
         snap = issues_snapshot([
