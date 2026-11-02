@@ -14,6 +14,7 @@ from person_facts import (normalize_report_text, FIXED_DISPLAY, HOMONYMS, homony
 from issue_tracker import (merge_auto_into_fixed, check_issue_name, update_history, persistent_candidates,
                            format_candidates, normalize_history, strip_tag, name_tokens)
 from hanun_card import build_hanun_card, issues_snapshot
+from issue_defs import build_defs, publish_defs
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -172,7 +173,7 @@ def save_raw_csv(df, now_kst) -> str:
     try:
         os.makedirs(RAW_CSV_DIR, exist_ok=True)
         path = os.path.join(RAW_CSV_DIR, f"yt_politics_24h_{now_kst.strftime('%Y%m%d_%H%M')}.csv")
-        df.drop(columns=[c for c in ("게시일시_dt",) if c in df.columns]).to_csv(path, index=False, encoding="utf-8-sig")
+        df.drop(columns=[c for c in ("게시일시_dt", "설명") if c in df.columns]).to_csv(path, index=False, encoding="utf-8-sig")
         print(f"ℹ️ 원본 CSV 저장: {path} ({len(df)}행)")
         return path
     except Exception as e:
@@ -839,6 +840,7 @@ def fetch_recent_videos(youtube, playlist_id, channel_name, channel_id):
                     "게시일시_dt": pub_time_kst,
                     "게시일시": pub_time_kst.strftime("%m-%d %H:%M"),
                     "링크": f"https://youtu.be/{item['id']}",
+                    "설명": (snippet.get("description") or "")[:1000],
                     "is_live": is_live_video
                 })
 
@@ -1022,6 +1024,23 @@ def send_telegram_message(message, footer="", *, expandable=False):
                 print(f"✅ 텔레그램 메시지 전송 성공 (Part {i}/{len(chunks)})")
         except Exception as e:
             print(f"❌ 텔레그램 통신 에러 (Part {i}/{len(chunks)}): {redact_secrets(e)}")
+
+
+def build_issue_defs(df, issue_records, issue_keywords):
+    """카드 이슈별 매칭 영상(종합방송 제외)을 모아 issue_defs.build_defs 입력으로 변환."""
+    videos = {}
+    df_m = df[df["프레임"] != "종합방송"]
+    for row in issue_records:
+        name = row.get("이슈명")
+        kws = issue_keywords.get(name)
+        if not kws:
+            continue
+        is_auto = name.endswith(DYNAMIC_TAG)
+        mask = issue_match_mask(df_m["제목_정제"], kws, AUTO_ISSUE_MUST.get(name) if is_auto else None) \
+            | context_mask(df_m["제목_정제"], ISSUE_CONTEXT_LINKS.get(name))
+        cols = [c for c in ("채널명", "제목", "조회수", "링크", "프레임", "설명") if c in df_m.columns]
+        videos[name] = df_m[mask].sort_values(by="조회수", ascending=False).head(5)[cols].to_dict("records")
+    return build_defs(issue_records, videos, source="yeogwon", aliases=issue_keywords)
 
 
 def run_monitoring():
@@ -1367,6 +1386,11 @@ def run_monitoring():
 
     # 한눈 카드 먼저, 원문 리포트 이어짐 (텔레그램 메시지 2통+)
     send_telegram_message(hanun_html)
+    # [Q&A Phase A] 이슈 한 줄 정의 → Cloudflare KV (실패해도 리포트 발송 계속)
+    try:
+        publish_defs(build_issue_defs(df, issue_records, issue_keywords_today))
+    except Exception as e:
+        print(f"⚠️ [issue_defs] 생략: {redact_secrets(e)}")
     send_telegram_message(msg, audit_footer, expandable=True)
 
 
