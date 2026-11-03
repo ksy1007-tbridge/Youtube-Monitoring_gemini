@@ -69,6 +69,9 @@ def fetch_caption_head(video: dict, seconds: int = 60):
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
 _TAG_RE = re.compile(r"<[^>]+>")
+NEWS_CANDIDATES = 6
+NEWS_PAGE_TIMEOUT = 4
+LEAD_MAX = 200
 
 
 def _news_query(issue_name: str) -> str:
@@ -77,15 +80,26 @@ def _news_query(issue_name: str) -> str:
     return re.sub(r"\s+", " ", base).strip()
 
 
-def parse_news_rss(xml_text: str):
-    """Google 뉴스 RSS → 최신 pubDate 1건 {"channel","title","url","text"} 또는 None."""
+def _news_keywords(issue_name: str):
+    """핵심어: 논란/이슈/사건 등 일반어 제거 후 2글자 이상 토큰."""
+    q = re.sub(r"(논란|이슈|사건|의혹)", " ", _news_query(issue_name))
+    return [w for w in q.split() if len(w) >= 2]
+
+
+def _kw_score(item: dict, kws) -> int:
+    hay = (item.get("title") or "") + " " + (item.get("lead") or "")
+    return sum(1 for k in kws if k in hay)
+
+
+def parse_news_items(xml_text: str, limit: int = NEWS_CANDIDATES):
+    """Google 뉴스 RSS → 최신순 후보 목록 [{"channel","title","url","lead","ts"}]."""
     import xml.etree.ElementTree as ET
     from email.utils import parsedate_to_datetime
     try:
         root = ET.fromstring(xml_text)
     except Exception:
-        return None
-    best, best_ts = None, None
+        return []
+    items = []
     for it in root.iter("item"):
         title = (it.findtext("title") or "").strip()
         src_el = it.find("source")
@@ -99,21 +113,122 @@ def parse_news_rss(xml_text: str):
             continue
         desc = _TAG_RE.sub(" ", it.findtext("description") or "")
         desc = re.sub(r"\s+", " ", desc.replace("&nbsp;", " ")).strip()
-        # Google RSS description은 관련기사 묶음이라 자기 제목·언론사 외 리드가 있을 때만 사용
-        lead = "" if (not desc or title in desc) else desc[:200]
+        # Google RSS description은 관련기사 묶음이라 자기 제목 외 리드가 있을 때만 사용
+        lead = "" if (not desc or title in desc) else desc[:LEAD_MAX]
         try:
             ts = parsedate_to_datetime(it.findtext("pubDate") or "").timestamp()
         except Exception:
             ts = 0
-        if best is None or ts > best_ts:
-            text = title + ("\n" + lead if lead else "")
-            best, best_ts = {"channel": channel, "title": title, "url": url, "text": text}, ts
-    return best
+        items.append({"channel": channel, "title": title, "url": url, "lead": lead, "ts": ts})
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items[:limit]
+
+
+def _pick_news(items, kws):
+    """핵심어가 제목·리드에 가장 많이 든 후보(동점은 최신). 매칭 0이면 최신 1건(기존 동작 유지)."""
+    if not items:
+        return None
+    if kws:
+        best = max(items, key=lambda x: (_kw_score(x, kws), x["ts"]))
+        if _kw_score(best, kws) > 0:
+            return best
+    return items[0]
+
+
+def _as_news(item):
+    if not item:
+        return None
+    lead = item.get("lead") or ""
+    return {"channel": item["channel"], "title": item["title"], "url": item["url"],
+            "text": item["title"] + ("\n" + lead if lead else "")}
+
+
+def parse_news_rss(xml_text: str, issue_name: str = ""):
+    """RSS → 1건 {"channel","title","url","text"} 또는 None (issue_name 주면 핵심어 우선)."""
+    return _as_news(_pick_news(parse_news_items(xml_text), _news_keywords(issue_name)))
+
+
+def _decode_google_news_url(url: str):
+    """news.google.com 링크에서 HTTP 없이 원문 URL 추출(url= 파라미터 / 구형 base64 id). 실패 시 None."""
+    import base64
+    from urllib.parse import urlparse, parse_qs
+    try:
+        p = urlparse(url)
+        if "news.google." not in (p.netloc or ""):
+            return url
+        qs = parse_qs(p.query)
+        for k in ("url", "u", "q"):
+            v = (qs.get(k) or [""])[0]
+            if v.startswith("http"):
+                return v
+        seg = p.path.rstrip("/").rsplit("/", 1)[-1]
+        raw = base64.urlsafe_b64decode(seg + "=" * (-len(seg) % 4))
+        m = re.search(rb"https?://[\x21-\x7e]+", raw)
+        if m:
+            cand = m.group(0).decode("ascii", "ignore")
+            # protobuf 길이 바이트가 끝에 붙는 경우 정리
+            return re.sub(r"[\x00-\x20\"<>]+.*$", "", cand)
+    except Exception:
+        pass
+    return None
+
+
+_META_RES = [
+    re.compile(r'<meta[^>]+(?:property|name)=["\'](?:og:description|description|twitter:description)["\'][^>]*content=["\']([^"\']{10,})["\']', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']{10,})["\'][^>]*(?:property|name)=["\'](?:og:description|description|twitter:description)["\']', re.I),
+]
+_OG_URL_RE = re.compile(r'<meta[^>]+property=["\']og:url["\'][^>]*content=["\'](https?://[^"\']+)["\']', re.I)
+
+
+def extract_lead(html_text: str) -> str:
+    """og:description / meta description → 앞 200자. 없으면 첫 <p> 덩어리."""
+    import html as _html
+    s = html_text or ""
+    for rx in _META_RES:
+        m = rx.search(s)
+        if m:
+            t = re.sub(r"\s+", " ", _html.unescape(m.group(1))).strip()
+            if t:
+                return t[:LEAD_MAX]
+    for m in re.finditer(r"<p[^>]*>(.*?)</p>", s, re.I | re.S):
+        t = re.sub(r"\s+", " ", _html.unescape(_TAG_RE.sub(" ", m.group(1)))).strip()
+        if len(t) >= 40:
+            return t[:LEAD_MAX]
+    return ""
+
+
+def _enrich(item: dict, timeout: int = NEWS_PAGE_TIMEOUT) -> dict:
+    """원문 URL·리드 보강. 실패해도 원 item 유지(예외 없음)."""
+    out = dict(item)
+    try:
+        orig = _decode_google_news_url(out["url"])
+        if orig:
+            out["url"] = orig
+        r = requests.get(out["url"], headers={"User-Agent": "Mozilla/5.0"},
+                         timeout=timeout, allow_redirects=True)
+        final = getattr(r, "url", "") or ""
+        if final.startswith("http") and "news.google." not in final:
+            out["url"] = final
+        if getattr(r, "status_code", 200) < 400:
+            text = r.text or ""
+            if "news.google." in out["url"]:
+                m = _OG_URL_RE.search(text)
+                if m and "news.google." not in m.group(1):
+                    out["url"] = m.group(1)
+            else:
+                lead = extract_lead(text)
+                if lead and lead != out["title"]:
+                    out["lead"] = lead
+    except Exception as e:
+        print(f"⚠️ [issue_defs] 원문 보강 생략: {_redact(e)}")
+    return out
 
 
 def fetch_news(issue_name: str, timeout: int = 8):
     """보도 1건 폴백 → {"channel","title","url","text"} 또는 None.
-    소스: Google 뉴스 RSS 검색(키 불필요), 최근 7일 최신순 1건. 실패·0건은 None."""
+    Google 뉴스 RSS(최근 7일) 후보 NEWS_CANDIDATES건 → 핵심어(논란/이슈/사건 제거) 매칭 우선,
+    매칭 0이면 최신 1건. 원문 URL·og:description 리드로 보강(실패 시 RSS 값 유지).
+    RSS 실패·0건은 None. ISSUE_DEFS_NEWS_DISABLE=1이면 None."""
     q = _news_query(issue_name)
     if not q or os.environ.get("ISSUE_DEFS_NEWS_DISABLE") == "1":
         return None
@@ -122,7 +237,17 @@ def fetch_news(issue_name: str, timeout: int = 8):
                          params={"q": f"{q} when:7d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"},
                          headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
         r.raise_for_status()
-        return parse_news_rss(r.text)
+        items = parse_news_items(r.text)
+        if not items:
+            return None
+        kws = _news_keywords(issue_name)
+        # 리드 보강 후 재평가: 상위 3건만 원문 조회(호출 수 제한)
+        ranked = sorted(items, key=lambda x: (_kw_score(x, kws), x["ts"]), reverse=True)
+        top = ranked[0]
+        if kws and _kw_score(top, kws) > 0:
+            return _as_news(_enrich(top))
+        enriched = [_enrich(x) for x in ranked[:3]]
+        return _as_news(_pick_news(enriched, kws) or items[0])
     except Exception as e:
         print(f"⚠️ [issue_defs] 보도 조회 실패: {_redact(e)}")
         return None
