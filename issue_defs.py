@@ -67,9 +67,65 @@ def fetch_caption_head(video: dict, seconds: int = 60):
     return None
 
 
-def fetch_news(issue_name: str):
-    """보도 1건 폴백 → {"channel","title","url","text"} 또는 None. TODO: 뉴스 소스 미정, Phase A에서는 None."""
-    return None
+GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _news_query(issue_name: str) -> str:
+    base = re.sub(r"\s*(논란|이슈|사건)\s*$", "", strip_auto(issue_name or "")).strip()
+    base = re.sub(r"[\[\]()「」『』\"“”‘’]", " ", base)
+    return re.sub(r"\s+", " ", base).strip()
+
+
+def parse_news_rss(xml_text: str):
+    """Google 뉴스 RSS → 최신 pubDate 1건 {"channel","title","url","text"} 또는 None."""
+    import xml.etree.ElementTree as ET
+    from email.utils import parsedate_to_datetime
+    try:
+        root = ET.fromstring(xml_text)
+    except Exception:
+        return None
+    best, best_ts = None, None
+    for it in root.iter("item"):
+        title = (it.findtext("title") or "").strip()
+        src_el = it.find("source")
+        channel = (src_el.text or "").strip() if src_el is not None else ""
+        if channel and title.endswith(" - " + channel):
+            title = title[: -len(" - " + channel)].strip()
+        elif not channel and " - " in title:
+            title, channel = [p.strip() for p in title.rsplit(" - ", 1)]
+        url = (it.findtext("link") or "").strip()
+        if not title or not url:
+            continue
+        desc = _TAG_RE.sub(" ", it.findtext("description") or "")
+        desc = re.sub(r"\s+", " ", desc.replace("&nbsp;", " ")).strip()
+        # Google RSS description은 관련기사 묶음이라 자기 제목·언론사 외 리드가 있을 때만 사용
+        lead = "" if (not desc or title in desc) else desc[:200]
+        try:
+            ts = parsedate_to_datetime(it.findtext("pubDate") or "").timestamp()
+        except Exception:
+            ts = 0
+        if best is None or ts > best_ts:
+            text = title + ("\n" + lead if lead else "")
+            best, best_ts = {"channel": channel, "title": title, "url": url, "text": text}, ts
+    return best
+
+
+def fetch_news(issue_name: str, timeout: int = 8):
+    """보도 1건 폴백 → {"channel","title","url","text"} 또는 None.
+    소스: Google 뉴스 RSS 검색(키 불필요), 최근 7일 최신순 1건. 실패·0건은 None."""
+    q = _news_query(issue_name)
+    if not q or os.environ.get("ISSUE_DEFS_NEWS_DISABLE") == "1":
+        return None
+    try:
+        r = requests.get(GOOGLE_NEWS_RSS,
+                         params={"q": f"{q} when:7d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"},
+                         headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+        r.raise_for_status()
+        return parse_news_rss(r.text)
+    except Exception as e:
+        print(f"⚠️ [issue_defs] 보도 조회 실패: {_redact(e)}")
+        return None
 
 
 _JUNK_LINE_RE = re.compile(
