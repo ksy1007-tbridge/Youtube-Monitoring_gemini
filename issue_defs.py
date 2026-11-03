@@ -73,15 +73,30 @@ def fetch_news(issue_name: str):
 
 
 _JUNK_LINE_RE = re.compile(
-    r"(ARS|후원|광고\s*문의|광고문의|계좌|멤버십|구독\s*자|좋아요|알림\s*설정|홈페이지|"
-    r"bit\.ly|카톡|텔레그램|출연\s*:|진행\s*:|문의\s*:|메일|email|"
-    r"RADIO\s+\S+\s+\d{4,}\s*방송|\d{2,4}-\d{3,4}-\d{4})",
+    r"(ARS|후원|광고|계좌|멤버십|구독\s*자|좋아요|알림\s*설정|홈페이지|"
+    r"bit\.ly|카톡|텔레그램|출연\s*[:：]|\(\s*출연\s*\)|진행\s*[:：]|문의\s*[:：]|메일|email|"
+    r"RADIO\s+\S+\s+\d{4,}\s*방송|\d{2,4}-\d{3,4}-\d{4}|"
+    # 출처·자막 고지 / 저작권 / 제품 링크 / 도서 / 인터뷰 전문
+    r"출처|자막\s*으로\s*명시|화면\s*인용|다음과\s*같이\s*명시|"
+    r"공정\s*사용|fair\s*use|저작권|콘텐츠\s*(무단\s*)?(사용|이용)|무단\s*(전재|배포)|"
+    r"제품\s*링크|도서\s*구입|책\s*구입|인터뷰\s*전문)",
     re.I,
 )
+
+# 챕터 타임스탬프 줄: [4:10] …, 12:00 …
+_CHAPTER_RE = re.compile(r"^\s*[\[(]?\d{1,2}:\d{2}(:\d{2})?[\])]?(\s|$)")
+# 채널 브랜드·슬로건만 있는 짧은 줄
+_SLOGAN_RE = re.compile(r"^(미디어\s*['‘\"“「].{1,20}['’\"”」]|.{0,12}더\s*나은\s*세상)\S*\s*[!.]?$")
 
 
 def _is_junk_line(line: str) -> bool:
     s = (line or "").strip()
+    if s.startswith("※"):
+        return True
+    if _CHAPTER_RE.match(s):
+        return True
+    if len(s) <= 30 and _SLOGAN_RE.match(s):
+        return True
     if len(s) < 8:
         return True
     if _JUNK_LINE_RE.search(s):
@@ -108,6 +123,8 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
             keys.extend([p for p in re.split(r"[\s/·]+", base) if len(p) >= 2])
     cands = []
     for line in str(text).splitlines():
+        if line.strip().startswith("※"):
+            continue
         line = _HASHTAG_RE.sub("", _URL_RE.sub("", line)).strip(" \t-•▶▷■※*|")
         if _is_junk_line(line):
             continue
