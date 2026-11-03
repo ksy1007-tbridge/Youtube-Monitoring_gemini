@@ -224,24 +224,87 @@ def _enrich(item: dict, timeout: int = NEWS_PAGE_TIMEOUT) -> dict:
     return out
 
 
+NAVER_NEWS_SEARCH = "https://search.naver.com/search.naver"
+_HM_A_RE = re.compile(r'<a\b([^>]*?)data-heatmap-target="\.(tit|body|prof)"([^>]*)>(.*?)</a>', re.S)
+_HREF_RE = re.compile(r'href="([^"]+)"')
+
+
+def _clean_html_text(s: str) -> str:
+    import html as _html
+    t = _html.unescape(_TAG_RE.sub(" ", s or ""))
+    t = t.replace("새 창 열림", " ")
+    return re.sub(r"\s+", " ", t).strip()
+
+
+def parse_naver_news(html_text: str, limit: int = NEWS_CANDIDATES):
+    """네이버 뉴스 검색(where=news, 최신순) HTML → 후보 [{"channel","title","url","lead","ts"}].
+    난독화 클래스 대신 의미 속성 data-heatmap-target(.prof 언론사 / .tit 제목 / .body 요약)에 의존.
+    url은 .tit의 href = 언론사 원문. ts는 문서 순서(최신순 정렬 결과)를 역순 점수로."""
+    items, press, cur = [], "", None
+    try:
+        for m in _HM_A_RE.finditer(html_text or ""):
+            attrs = m.group(1) + m.group(3)
+            kind = m.group(2)
+            hm = _HREF_RE.search(attrs)
+            href = (hm.group(1) if hm else "").replace("&amp;", "&")
+            text = _clean_html_text(m.group(4))
+            if kind == "prof":
+                if text:
+                    press = text
+            elif kind == "tit":
+                if text and href.startswith("http"):
+                    cur = {"channel": press, "title": text, "url": href, "lead": "", "ts": 0}
+                    items.append(cur)
+            elif kind == "body" and cur is not None and not cur["lead"] and href == cur["url"]:
+                cur["lead"] = text[:LEAD_MAX]
+            if len(items) > limit:
+                break
+    except Exception:
+        return []
+    items = items[:limit]
+    n = len(items)
+    for i, it in enumerate(items):
+        it["ts"] = n - i
+    return items
+
+
+def _fetch_naver_items(q: str, timeout: int):
+    r = requests.get(NAVER_NEWS_SEARCH,
+                     params={"where": "news", "query": q, "sort": "1", "pd": "1"},  # 최신순·1주
+                     headers={"User-Agent": "Mozilla/5.0", "Accept-Language": "ko-KR,ko;q=0.9"},
+                     timeout=timeout)
+    r.raise_for_status()
+    return parse_naver_news(r.text)
+
+
+def _fetch_google_items(q: str, timeout: int):
+    r = requests.get(GOOGLE_NEWS_RSS,
+                     params={"q": f"{q} when:7d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"},
+                     headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
+    r.raise_for_status()
+    return parse_news_items(r.text)
+
+
 def fetch_news(issue_name: str, timeout: int = 8):
     """보도 1건 폴백 → {"channel","title","url","text"} 또는 None.
-    Google 뉴스 RSS(최근 7일) 후보 NEWS_CANDIDATES건 → 핵심어(논란/이슈/사건 제거) 매칭 우선,
-    매칭 0이면 최신 1건. 원문 URL·og:description 리드로 보강(실패 시 RSS 값 유지).
-    RSS 실패·0건은 None. ISSUE_DEFS_NEWS_DISABLE=1이면 None."""
+    1순위 네이버 뉴스 검색(최신순·1주, 키 불필요) — 원문 URL·언론사·요약이 바로 나옴.
+    후보 중 핵심어(논란/이슈/사건/의혹 제거)가 제목·요약에 든 것 우선, 없으면 최신 1건.
+    네이버 실패·0건이면 최후 폴백으로 Google 뉴스 RSS(+원문 디코드/리드 보강).
+    (Daum 뉴스 검색은 비브라우저 요청을 차단해 미사용.) ISSUE_DEFS_NEWS_DISABLE=1이면 None. 예외 없음."""
     q = _news_query(issue_name)
     if not q or os.environ.get("ISSUE_DEFS_NEWS_DISABLE") == "1":
         return None
+    kws = _news_keywords(issue_name)
     try:
-        r = requests.get(GOOGLE_NEWS_RSS,
-                         params={"q": f"{q} when:7d", "hl": "ko", "gl": "KR", "ceid": "KR:ko"},
-                         headers={"User-Agent": "Mozilla/5.0"}, timeout=timeout)
-        r.raise_for_status()
-        items = parse_news_items(r.text)
+        items = _fetch_naver_items(q, timeout)
+        if items:
+            return _as_news(_pick_news(items, kws))
+    except Exception as e:
+        print(f"⚠️ [issue_defs] 네이버 뉴스 조회 실패: {_redact(e)}")
+    try:
+        items = _fetch_google_items(q, timeout)
         if not items:
             return None
-        kws = _news_keywords(issue_name)
-        # 리드 보강 후 재평가: 상위 3건만 원문 조회(호출 수 제한)
         ranked = sorted(items, key=lambda x: (_kw_score(x, kws), x["ts"]), reverse=True)
         top = ranked[0]
         if kws and _kw_score(top, kws) > 0:
