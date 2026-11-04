@@ -9,6 +9,8 @@ on:
 jobs:
   monitor:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Check out repository
@@ -60,4 +62,41 @@ jobs:
           name: raw-csv-${{ github.run_id }}-${{ github.run_attempt }}
           path: raw_csv/*.csv
           if-no-files-found: warn
-          retention-days: 30
+          retention-days: 7
+
+      - name: Commit raw CSV to data branch
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(raw_csv/*.csv)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "no raw_csv; skip data branch commit"
+            exit 0
+          fi
+          DATE=$(TZ=Asia/Seoul date +%Y-%m-%d)
+          DEST="raw_csv/${DATE}"
+          WORK="/tmp/data-branch-$$"
+          rm -rf "$WORK"
+          REPO_URL="https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git ls-remote --exit-code --heads origin data >/dev/null 2>&1; then
+            git clone --depth 1 --branch data "$REPO_URL" "$WORK"
+          else
+            mkdir -p "$WORK"
+            git -C "$WORK" init
+            git -C "$WORK" checkout -b data
+            git -C "$WORK" remote add origin "$REPO_URL"
+          fi
+          mkdir -p "$WORK/$DEST"
+          cp "${files[@]}" "$WORK/$DEST/"
+          git -C "$WORK" config user.name "github-actions[bot]"
+          git -C "$WORK" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$WORK" add "$DEST"
+          if git -C "$WORK" diff --cached --quiet; then
+            echo "nothing new on data branch"
+            exit 0
+          fi
+          git -C "$WORK" commit -m "data: ${DATE} raw CSV (${{ github.run_id }})"
+          git -C "$WORK" push -u origin data
