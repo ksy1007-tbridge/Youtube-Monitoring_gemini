@@ -36,7 +36,7 @@ class BuildDefs(unittest.TestCase):
             self.assertEqual(d["issues"][0]["evidence_kind"], "caption")
             self.assertEqual(d["issues"][0]["issue_name"], "X")
             d = build_defs([{"이슈명": "X"}], {"X": [nodesc]}, now=NOW, caption=NONE,
-                           news=lambda n: {"channel": "○○일보", "title": "보도 제목", "url": "https://n", "text": "보도 기준 정의 문장입니다."})
+                           news=lambda n: {"channel": "○○일보", "title": "보도 제목", "url": "https://n", "text": "보도 기준으로 X 전 대표의 발언이 비판받았다."})
             self.assertEqual(d["issues"][0]["evidence_kind"], "news")
             d = build_defs([{"이슈명": "X"}], {"X": [nodesc]}, now=NOW, caption=NONE, news=NONE)
             self.assertEqual(d["issues"], [])

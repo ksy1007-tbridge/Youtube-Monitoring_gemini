@@ -21,8 +21,8 @@ def test_keyword_match_preferred():
     assert n["title"] == "유시민 발언 파장" and n["channel"] == "나일보"
 
 
-def test_no_keyword_match_falls_back_latest():
-    assert d.parse_news_rss(RSS, "없는사람 논란")["title"] == "여야 예산안 공방"
+def test_no_keyword_match_returns_none():
+    assert d.parse_news_rss(RSS, "없는사람 논란") is None
 
 
 def test_decode_google_url():
