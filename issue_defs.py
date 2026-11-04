@@ -87,8 +87,10 @@ def _news_keywords(issue_name: str):
 
 
 def _kw_score(item: dict, kws) -> int:
-    hay = (item.get("title") or "") + " " + (item.get("lead") or "")
-    return sum(1 for k in kws if k in hay)
+    """제목·리드(요약)에만 핵심어 매칭. 제목 매칭은 가중 2 (본문 묻힘 매칭은 고려 안 함)."""
+    title = item.get("title") or ""
+    lead = item.get("lead") or ""
+    return sum(2 if k in title else (1 if k in lead else 0) for k in kws)
 
 
 def parse_news_items(xml_text: str, limit: int = NEWS_CANDIDATES):
@@ -125,13 +127,13 @@ def parse_news_items(xml_text: str, limit: int = NEWS_CANDIDATES):
 
 
 def _pick_news(items, kws):
-    """핵심어가 제목·리드에 가장 많이 든 후보(동점은 최신). 매칭 0이면 최신 1건(기존 동작 유지)."""
+    """핵심어가 제목·리드에 가장 많이 든 후보(동점은 최신).
+    핵심어가 있는데 제목·리드 매칭 0이면 None(엉뚱한 기사보다 생략). 핵심어 자체가 없을 때만 최신 1건."""
     if not items:
         return None
     if kws:
         best = max(items, key=lambda x: (_kw_score(x, kws), x["ts"]))
-        if _kw_score(best, kws) > 0:
-            return best
+        return best if _kw_score(best, kws) > 0 else None
     return items[0]
 
 
@@ -297,8 +299,9 @@ def fetch_news(issue_name: str, timeout: int = 8):
     kws = _news_keywords(issue_name)
     try:
         items = _fetch_naver_items(q, timeout)
-        if items:
-            return _as_news(_pick_news(items, kws))
+        picked = _pick_news(items, kws) if items else None
+        if picked:
+            return _as_news(picked)
     except Exception as e:
         print(f"⚠️ [issue_defs] 네이버 뉴스 조회 실패: {_redact(e)}")
     try:
@@ -310,7 +313,7 @@ def fetch_news(issue_name: str, timeout: int = 8):
         if kws and _kw_score(top, kws) > 0:
             return _as_news(_enrich(top))
         enriched = [_enrich(x) for x in ranked[:3]]
-        return _as_news(_pick_news(enriched, kws) or items[0])
+        return _as_news(_pick_news(enriched, kws))
     except Exception as e:
         print(f"⚠️ [issue_defs] 보도 조회 실패: {_redact(e)}")
         return None
@@ -323,7 +326,11 @@ _JUNK_LINE_RE = re.compile(
     # 출처·자막 고지 / 저작권 / 제품 링크 / 도서 / 인터뷰 전문
     r"출처|자막\s*으로\s*명시|화면\s*인용|다음과\s*같이\s*명시|"
     r"공정\s*사용|fair\s*use|저작권|콘텐츠\s*(무단\s*)?(사용|이용)|무단\s*(전재|배포)|"
-    r"제품\s*링크|도서\s*구입|책\s*구입|인터뷰\s*전문)",
+    r"제품\s*링크|도서\s*구입|책\s*구입|인터뷰\s*전문|"
+    # 광고·스팸 (예약/견적 대행, 꽃배달) / 저작권 보일러플레이트
+    r"AI\s*가\s*조건에\s*맞는|견적\s*비교|무료로\s*견적|예약\s*까지\s*해결|"
+    r"꽃\s*배달|꽃반장|전국구\s*꽃|따뜻한\s*진심을\s*전하는|"
+    r"Copyright|ⓒ|©|무단\s*사용을?\s*금지|All\s*rights\s*reserv)",
     re.I,
 )
 
@@ -402,6 +409,64 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
     return best
 
 
+_SUBSTANCE_WORDS = ("발언", "비판", "고발", "논란", "파장", "합당", "기소", "공소", "탄핵", "의혹",
+                    "사과", "사퇴", "재판", "특검", "수사", "판결", "구속", "반발", "주장", "폭로",
+                    "제기", "요구", "규탄", "징계", "출마", "공천", "선고", "압수", "체포", "고소")
+# 방송 라벨: MBC 라디오 〈김종배의 시선집중〉 261103(화) 방송 등
+_BROADCAST_RE = re.compile(
+    r"(MBC|KBS|SBS|YTN|JTBC|CBS|TBS|BBS|MBN|채널A|TV조선|라디오|시선집중|뉴스공장|"
+    r"\d{6}\s*\(?[월화수목금토일]?\)?\s*방송|\S+방송$|〈[^〉]*〉|<[^>]*>|생방송|LIVE|풀버전|다시보기)",
+    re.I)
+
+
+def _is_broadcast_header(line: str, issue_name: str = None) -> bool:
+    """'○○ 관련' 접두·방송사·프로그램명·방송코드를 걷어내면 남는 게 거의 없는 줄."""
+    s = str(line or "")
+    base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()
+    if base:
+        s = s.replace(base, " ")
+    s = re.sub(r"^\s*관련\s*", " ", s)
+    if not _BROADCAST_RE.search(str(line or "")):
+        return False
+    rest = _BROADCAST_RE.sub(" ", s)
+    rest = re.sub(r"[\d\s\(\)\[\]〈〉<>《》「」'\"“”‘’·,.:|ㅣ/\-~…!?]+", " ", rest)
+    rest = re.sub(r"\b(관련|의|에서|오늘|방송|라디오)\b", " ", rest)
+    return len(rest.replace(" ", "")) <= 6
+
+
+def _is_weak_one_liner(line, issue_name=None) -> bool:
+    """정의 한 줄로 쓰기에 부적합(잡음·광고·방송 라벨·실체 없음)이면 True."""
+    s = str(line or "").strip()
+    if not s:
+        return True
+    core = re.sub(r"^\S+(\s+\S+)?\s+관련\s+", "", s) if " 관련 " in s else s
+    if _is_junk_line(s) or _is_junk_line(core) or _JUNK_LINE_RE.search(s):
+        return True
+    if _is_broadcast_header(s, issue_name):
+        return True
+    base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()
+    body = s.replace(base, "") if base else s
+    body = re.sub(r"\s*관련\s*", " ", body).strip()
+    has_sub = any(w in s for w in _SUBSTANCE_WORDS) or any(q in s for q in ("“", '"', "‘"))
+    if len(body.replace(" ", "")) < 15 and not has_sub:
+        return True
+    return False
+
+
+def _is_omnibus_for(title: str, issue_name: str = None) -> bool:
+    """'A | B | C' 식 여러 주제 묶음 LIVE이고 이슈 핵심어가 그중 한 토막에만 있으면 True."""
+    t = str(title or "")
+    parts = [p.strip() for p in re.split(r"[|ㅣ]", t) if p.strip()]
+    if len(parts) < 3:
+        return False
+    base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()
+    toks = [w for w in re.split(r"[\s/·]+", base) if len(w) >= 2] or ([base] if base else [])
+    if not toks:
+        return True
+    hit = sum(1 for p in parts if any(k in p for k in toks))
+    return hit <= 1
+
+
 def _title_one_liner(title: str, issue_name: str = None, max_len: int = ONE_LINER_MAX):
     """설명·자막이 광고뿐일 때 제목에서 담백한 한 줄. 자극 물음표·말줄임은 정리."""
     t = _HASHTAG_RE.sub("", _URL_RE.sub("", title or "")).strip()
@@ -435,12 +500,18 @@ def _pick_standalone(videos):
 def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5):
     picked = _pick_standalone(videos)[:max_videos]
     for v in picked:
+        # 여러 주제 묶음 LIVE에서 이슈가 한 토막뿐이면 설명·자막은 다른 주제 잡음 → 건너뜀
+        if _is_omnibus_for(v.get("제목") or "", issue_name):
+            continue
         for kind, getter in (("description", describe), ("caption", caption)):
             raw = getter(v)
             try:
                 line = summarize(raw, issue_name=issue_name)
             except TypeError:
                 line = summarize(raw)
+            if line and _is_weak_one_liner(line, issue_name):
+                print(f"ℹ️ [issue_defs] '{issue_name}' {kind} 약한 한 줄 거부: {line[:40]}")
+                line = None
             if line:
                 return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
                               "evidence_url": v.get("링크") or "", "evidence_kind": kind}
@@ -450,12 +521,17 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
             line = summarize(n.get("text") or n.get("title"), issue_name=issue_name)
         except TypeError:
             line = summarize(n.get("text") or n.get("title"))
+        if line and _is_weak_one_liner(line, issue_name):
+            print(f"ℹ️ [issue_defs] '{issue_name}' news 약한 한 줄 거부: {line[:40]}")
+            line = None
         if line:
             return line, {"evidence_channel": n.get("channel") or "", "evidence_title": n.get("title") or "",
                           "evidence_url": n.get("url") or "", "evidence_kind": "news"}
     # 마지막: 상위 단독 영상 제목
     for v in picked:
         line = _title_one_liner(v.get("제목") or "", issue_name)
+        if line and (_is_broadcast_header(line, issue_name) or _JUNK_LINE_RE.search(line)):
+            line = None
         if line:
             return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
                           "evidence_url": v.get("링크") or "", "evidence_kind": "description"}

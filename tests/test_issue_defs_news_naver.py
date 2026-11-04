@@ -37,8 +37,8 @@ def test_relevance_from_lead_and_latest_fallback(monkeypatch):
     n = d.fetch_news("유시민 논란")
     assert n["url"] == "https://b.kr/news?id=2&r=1" and n["channel"] == "나일보"
     assert n["text"].startswith('정치권 "파장"\n유시민')
-    assert d.fetch_news("없는사람 의혹")["url"] == "https://a.kr/1"
-    assert all("naver" in c for c in calls)
+    assert d.fetch_news("없는사람 의혹") is None  # 제목·리드 핵심어 없으면 엉뚱한 기사 대신 None
+    assert "naver" in calls[0]  # 네이버 무관 기사뿐이면 Google 다음 후보로 넘어감
 
 
 def test_disable(monkeypatch):

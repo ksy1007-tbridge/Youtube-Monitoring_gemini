@@ -94,3 +94,55 @@ def test_skip_misc_junk_lines():
 def test_body_line_not_overkilled():
     line = m.summarize_one_liner("유시민 작가가 '파브르 곤충기' 비유로 합당론을 비판했다.", issue_name="유시민 논란")
     assert line and "유시민" in line
+
+
+# ----- 2026-11-04 잡음 강화 -----
+import issue_defs as _d
+
+AD = "AI가 조건에 맞는 최적의 장소를 찾아 무료로 견적 비교부터 예약까지 해결해 드립니다"
+FLOWER = "따뜻한 진심을 전하는 전국구 꽃배달 꽃반장"
+COPY = "Copyrightⓒ ○○TV 무단사용을 금지합니다"
+
+
+def test_ad_flower_copyright_are_junk():
+    for s in (AD, FLOWER, COPY, "All rights reserved."):
+        assert _d._is_junk_line(s)
+        assert _d._is_weak_one_liner(s, "김어준")
+    assert _d.summarize_one_liner("\n".join([AD, FLOWER, COPY]), issue_name="김어준") is None
+
+
+def test_broadcast_header_is_weak():
+    assert _d._is_weak_one_liner("유시민 관련 MBC 라디오 〈김종배의 시선집중〉 261103(화) 방송", "유시민")
+    assert _d._is_weak_one_liner("유시민 관련 MBC 라디오 〈김종배의 시선집중〉", "유시민 논란")
+    assert not _d._is_weak_one_liner("유시민 전 이사장, 합당 반대파를 공개 비판하며 파장", "유시민")
+
+
+def test_build_one_ad_desc_falls_to_news():
+    v = {"채널명": "c", "제목": "김어준 발언 정리", "조회수": 10, "링크": "https://y/1", "프레임": "x"}
+    news = lambda n: {"channel": "○○일보", "title": "김어준, 방송 발언 논란", "url": "https://n/1",
+                      "text": "김어준씨의 방송 발언이 정치권 비판을 불렀다."}
+    line, ev = _d._build_one("김어준", [v], _d.summarize_one_liner,
+                             lambda v: AD + "\n" + FLOWER, lambda v: None, news)
+    assert ev["evidence_kind"] == "news" and "발언" in line
+
+
+def test_build_one_weak_mock_summarize_rejected():
+    v = {"채널명": "c", "제목": "t", "조회수": 1, "링크": "https://y/1"}
+    lines = {"d": "유시민 관련 MBC 라디오 〈김종배의 시선집중〉 261103(화) 방송"}
+    summ = lambda raw, issue_name=None: raw
+    news = lambda n: {"channel": "c", "title": "x", "url": "u", "text": "유시민 전 이사장 발언이 합당 논쟁으로 번졌다"}
+    line, ev = _d._build_one("유시민", [v], summ, lambda v: lines["d"], lambda v: None, news)
+    assert ev["evidence_kind"] == "news"
+
+
+def test_omnibus_title_detected():
+    assert _d._is_omnibus_for("합당 내홍 | 신장식 | 유시민 발언 | 예산", "유시민")
+    assert not _d._is_omnibus_for("유시민 발언 파장", "유시민")
+
+
+def test_news_picker_rejects_unrelated():
+    items = [{"channel": "조선비즈", "title": "내년 예산안 국회 통과 전망", "url": "u1",
+              "lead": "기재부는 총지출을 늘리기로 했다", "ts": 2}]
+    assert _d._pick_news(items, ["김어준"]) is None
+    items.append({"channel": "b", "title": "김어준 발언 논란", "url": "u2", "lead": "", "ts": 1})
+    assert _d._pick_news(items, ["김어준"])["url"] == "u2"
