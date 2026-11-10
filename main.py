@@ -532,7 +532,7 @@ def extract_dynamic_entities(all_titles, pool_titles=None, high_view_titles=None
         return empty
 
     try:
-        client = genai.Client(api_key=api_key.strip())
+        client = genai.Client(api_key=api_key.strip(), http_options=genai.types.HttpOptions(api_version="v1beta"))  # google-genai 3.x 기본 v1 대비 (11/10)
         pool_set, high_set = set(pool_titles or []), set(high_view_titles or [])
         ordered = [t for t in all_titles if t in high_set] + [t for t in all_titles if t in pool_set and t not in high_set] \
             + [t for t in all_titles if t not in pool_set and t not in high_set]
@@ -876,7 +876,7 @@ def generate_ai_insight(df_top, frame_stat_summary, person_summary_str, trend_su
         return "<b>[AI 심층 분석 스킵: GEMINI_API_KEY 미설정]</b>"
 
     try:
-        client = genai.Client(api_key=api_key.strip())
+        client = genai.Client(api_key=api_key.strip(), http_options=genai.types.HttpOptions(api_version="v1beta"))  # google-genai 3.x 기본 v1 대비 (11/10)
 
         top_videos = df_top.head(10)[["채널명", "제목", "프레임", "조회수"]].to_dict(orient="records")
 

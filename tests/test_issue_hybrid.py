@@ -29,7 +29,7 @@ ROWS = [
 def _fake_client(payload):
     resp = types.SimpleNamespace(text=payload, usage_metadata=None)
     models = types.SimpleNamespace(generate_content=lambda **kw: resp)
-    return lambda api_key: types.SimpleNamespace(models=models)
+    return lambda api_key, **kw: types.SimpleNamespace(models=models)
 
 
 def test_pipeline_merges_and_never_double_counts(monkeypatch):
