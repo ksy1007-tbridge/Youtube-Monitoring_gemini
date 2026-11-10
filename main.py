@@ -185,9 +185,10 @@ def save_raw_csv(df, now_kst) -> str:
 # 키워드는 re.escape 후 OR 매칭 (정규식 특수문자 안전)
 # ---------------------------------------------------------
 ISSUE_KEYWORDS = {
+    # 인물명(강진구·이상호 기자)은 단독 키워드로 두지 않는다 → ISSUE_PERSON_TOPIC(인물 AND 주제어)로만 매칭
     "여론조사 조작 공방": [
-        "여론조사 조작", "여조 조작", "여조 공작", "조작 폭로", "조작 방송",
-        "허위 응답", "중복 투표", "1인 84표", "1인 80표", "강진구", "이상호 기자"
+        "여론조사 조작", "여조 조작", "여조 공작", "여론조작", "여론 조작", "조작 폭로", "조작 방송",
+        "허위 응답", "중복 투표", "1인 84표", "1인 80표"
     ],
     "김어준 논란": ["김어준"],  # 정제 제목(제목_정제) 기준 매칭
     "당내 계파 갈등": ["친청", "친명", "당내 반란", "계파", "지도부 갈등", "최민희", "탈당"],
@@ -199,6 +200,17 @@ ISSUE_KEYWORDS = {
     "DMZ 지뢰/안보": ["DMZ", "비무장지대", "지뢰"],
     "강훈식·성남라인": ["강훈식", "성남라인", "성남 라인"],
 }
+
+# 고정 이슈의 '인물 AND 주제어' 조건 {이슈명: [([인물 별칭...], [주제어...]), ...]}
+# 예: '강진구 기자 우산 피습' 제목은 여론조사 조작 공방이 아님 / '강진구 여론조작 폭로'는 매칭
+ISSUE_PERSON_TOPIC = {
+    "여론조사 조작 공방": [(["강진구", "이상호 기자"], ["여론조사", "여조", "여론조작", "여론 조작"])],
+}
+# 고정 이슈를 카드 이슈로 올리는 최소 영상 수 (채널 2개 이상이면 건수와 무관하게 통과).
+# 기본 1(기존과 동일). 특정 사건용으로 만든 고정 버킷은 2 — 1건짜리 오탐이 카드·Q&A 정의로 번지는 것 방지.
+FIXED_ISSUE_MIN_TITLES_DEFAULT = 1
+FIXED_ISSUE_MIN_TITLES = {"여론조사 조작 공방": 2}
+FIXED_ISSUE_MIN_CHANNELS = 2
 
 # ---------------------------------------------------------
 # [프레임 키워드] 위에서부터 첫 매칭 프레임으로 판정 (순서가 우선순위)
@@ -364,6 +376,26 @@ def match_titles(series, keywords):
     return series.str.contains(pattern, regex=True, na=False)
 
 
+def person_topic_mask(series, issue_name):
+    """ISSUE_PERSON_TOPIC: 인물 별칭과 주제어가 제목에 함께 있을 때만 True."""
+    mask = series.map(lambda _: False).astype(bool)
+    for persons, topics in ISSUE_PERSON_TOPIC.get(issue_name, []):
+        mask |= match_titles(series, persons) & match_titles(series, topics)
+    return mask
+
+
+def fixed_issue_title_mask(series, issue_name, keywords):
+    """고정 이슈 매칭: 키워드 OR + 문맥 별칭 + 인물 AND 주제어."""
+    return match_titles(series, keywords) | context_mask(series, ISSUE_CONTEXT_LINKS.get(issue_name)) \
+        | person_topic_mask(series, issue_name)
+
+
+def fixed_issue_passes(issue_name, cnt, channel_cnt) -> bool:
+    """고정 이슈 카드 노출 최소 조건: 건수 >= 이슈별 최소치 또는 채널 >= FIXED_ISSUE_MIN_CHANNELS."""
+    min_titles = FIXED_ISSUE_MIN_TITLES.get(issue_name, FIXED_ISSUE_MIN_TITLES_DEFAULT)
+    return cnt >= min_titles or (cnt > 0 and channel_cnt >= FIXED_ISSUE_MIN_CHANNELS)
+
+
 def issue_match_mask(series, keywords, must=None):
     """이슈 매칭: keywords 중 하나 이상(OR). must(인물 별칭)가 있으면 그 인물도 함께 있어야 함(AND).
     예: '국민의힘 장동혁 대표 욕설' → (장동혁) AND (욕설|녹취…). 인물명 하나만으로는 매칭되지 않는다."""
@@ -415,7 +447,7 @@ def fixed_issue_mask(df):
     titles = df["제목_정제"]
     mask = titles.map(lambda _: False).astype(bool)
     for issue_name, keywords in ISSUE_KEYWORDS.items():
-        mask |= match_titles(titles, keywords) | context_mask(titles, ISSUE_CONTEXT_LINKS.get(issue_name))
+        mask |= fixed_issue_title_mask(titles, issue_name, keywords)
     return mask & (df["프레임"] != "종합방송")
 
 
@@ -437,13 +469,18 @@ def extract_major_issues(df, issue_keywords=None, absorbed=None, issue_must=None
         keywords = issue_keywords[issue_name]
         is_auto = issue_name.endswith(DYNAMIC_TAG)
         titles = df_matchable["제목_정제"]
-        mask = issue_match_mask(titles, keywords, issue_must.get(issue_name) if is_auto else None) \
-            | context_mask(titles, ISSUE_CONTEXT_LINKS.get(issue_name))
         if is_auto:
+            mask = issue_match_mask(titles, keywords, issue_must.get(issue_name)) \
+                | context_mask(titles, ISSUE_CONTEXT_LINKS.get(issue_name))
             mask &= ~df_matchable.index.isin(list(matched_indices))
+        else:
+            mask = fixed_issue_title_mask(titles, issue_name, keywords)
         sel = df_matchable[mask]
 
         cnt = len(sel)
+        if cnt > 0 and not is_auto and not fixed_issue_passes(issue_name, cnt, sel["채널명"].nunique()):
+            print(f"ℹ️ [이슈] 고정 이슈 '{issue_name}' {cnt}건(1채널) → 최소 조건 미달로 카드 제외(미분류 처리)")
+            continue
         if cnt > 0:
             matched_indices.update(sel.index)
             channel_cnt = sel["채널명"].nunique()
@@ -1036,8 +1073,11 @@ def build_issue_defs(df, issue_records, issue_keywords):
         if not kws:
             continue
         is_auto = name.endswith(DYNAMIC_TAG)
-        mask = issue_match_mask(df_m["제목_정제"], kws, AUTO_ISSUE_MUST.get(name) if is_auto else None) \
-            | context_mask(df_m["제목_정제"], ISSUE_CONTEXT_LINKS.get(name))
+        if is_auto:
+            mask = issue_match_mask(df_m["제목_정제"], kws, AUTO_ISSUE_MUST.get(name)) \
+                | context_mask(df_m["제목_정제"], ISSUE_CONTEXT_LINKS.get(name))
+        else:
+            mask = fixed_issue_title_mask(df_m["제목_정제"], name, kws)
         cols = [c for c in ("채널명", "제목", "조회수", "링크", "프레임", "설명") if c in df_m.columns]
         videos[name] = df_m[mask].sort_values(by="조회수", ascending=False).head(5)[cols].to_dict("records")
     return build_defs(issue_records, videos, source="yeogwon", aliases=issue_keywords)

@@ -4,7 +4,8 @@
 설계: telegram_issue_qa_design.md §1·§2·§5(A)
 - build_defs(issue_rows, videos, source="yeogwon") -> dict
 - publish_defs(defs) -> None  (Cloudflare KV REST PUT, 실패/미설정이어도 예외 없음)
-근거 순서: 이슈별 조회수 상위 단독 영상 설명란 → 자막 앞부분(~1분) → 보도 1건. 근거 없으면 정의 생략.
+근거 순서: 이슈별 조회수 상위 단독 영상 설명란 → 보도 1건 → (최후) 영상 제목. 근거 없으면 정의 생략.
+  ※ 자막 단계(fetch_caption_head)는 미구현(항상 None) — 실제로는 '설명란 → 보도' 순서로 동작한다.
 """
 import os
 import re
@@ -63,7 +64,8 @@ def fetch_description(video: dict):
 
 
 def fetch_caption_head(video: dict, seconds: int = 60):
-    """자막 앞부분(~1분). TODO: captions API는 OAuth 필요 → Phase A에서는 미구현(None)."""
+    """자막 앞부분(~1분). 미구현: captions API는 OAuth 필요, yt-dlp 자동자막은 외부 의존·429 위험.
+    항상 None을 돌려주므로 근거 순서에서 자막 단계는 실제로 건너뛴다(설명란 → 보도)."""
     return None
 
 
@@ -323,6 +325,12 @@ _JUNK_LINE_RE = re.compile(
     r"(ARS|후원|광고|계좌|멤버십|구독\s*자|좋아요|알림\s*설정|홈페이지|"
     r"bit\.ly|카톡|텔레그램|출연\s*[:：]|\(\s*출연\s*\)|진행\s*[:：]|문의\s*[:：]|메일|email|"
     r"RADIO\s+\S+\s+\d{4,}\s*방송|\d{2,4}-\d{3,4}-\d{4}|"
+    # 대표번호(1588·1644·1877 등 4-4)·지역/휴대 번호 2토막
+    r"(?<![\d\-])(?:1[568]\d{2}|0\d{1,2})-\d{3,4}(?![\d\-])|"
+    # 회원가입·제보·팩스·결제 안내 / 구글폼·URL 잔여 조각 / 이메일·코드 토큰
+    r"회원\s*가입|가입\s*(링크|문의|번호|안내)|제보\s*(하기|번호|가능|전화|메일|창구|팩스|[:：])|팩스|"
+    r"페이팔|paypal|구독료|문자로만|docs\.google|viewform|forms?/d/|"
+    r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9]|[A-Za-z0-9_\-]{20,}|"
     # 출처·자막 고지 / 저작권 / 제품 링크 / 도서 / 인터뷰 전문
     r"출처|자막\s*으로\s*명시|화면\s*인용|다음과\s*같이\s*명시|"
     r"공정\s*사용|fair\s*use|저작권|콘텐츠\s*(무단\s*)?(사용|이용)|무단\s*(전재|배포)|"
@@ -333,6 +341,41 @@ _JUNK_LINE_RE = re.compile(
     r"Copyright|ⓒ|©|무단\s*사용을?\s*금지|All\s*rights\s*reserv)",
     re.I,
 )
+
+# 채널 고정 푸터 글머리(◼️ 등). 이 글머리로 시작하는 줄이 3개 이상 이어지면 블록 전체를 버린다.
+_FOOTER_BULLETS = "◼◾▪"
+_BULLET_STRIP = " \t-•▶▷■※*|◼◾▪●◆□\ufe0f"
+FOOTER_BLOCK_MIN = 3
+
+
+def _drop_footer_blocks(lines):
+    """◼️/◾/▪ 글머리 줄이 FOOTER_BLOCK_MIN개 이상 연속(사이의 빈 줄·들여쓴 이어진 줄 포함)이면 그 블록을 제거."""
+    out, i, n = [], 0, len(lines)
+
+    def is_bullet(x):
+        return x.strip()[:1] in _FOOTER_BULLETS if x.strip() else False
+
+    while i < n:
+        if not is_bullet(lines[i]):
+            out.append(lines[i])
+            i += 1
+            continue
+        j, last, bullets = i, i, 0
+        while j < n:
+            ln = lines[j]
+            if is_bullet(ln):
+                bullets += 1
+                last = j
+            elif ln.strip() and not ln[:1].isspace():
+                break
+            j += 1
+        if bullets >= FOOTER_BLOCK_MIN:
+            i = last + 1
+        else:
+            out.extend(lines[i:last + 1])
+            i = last + 1
+    return out
+
 
 # 챕터 타임스탬프 줄: [4:10] …, 12:00 …
 _CHAPTER_RE = re.compile(r"^\s*[\[(]?\d{1,2}:\d{2}(:\d{2})?[\])]?(\s|$)")
@@ -373,10 +416,10 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
             keys.append(base)
             keys.extend([p for p in re.split(r"[\s/·]+", base) if len(p) >= 2])
     cands = []
-    for line in str(text).splitlines():
+    for line in _drop_footer_blocks(str(text).splitlines()):
         if line.strip().startswith("※"):
             continue
-        line = _HASHTAG_RE.sub("", _URL_RE.sub("", line)).strip(" \t-•▶▷■※*|")
+        line = _HASHTAG_RE.sub("", _URL_RE.sub("", line)).strip(_BULLET_STRIP)
         if _is_junk_line(line):
             continue
         sent = re.split(r"(?<=[.!?。])\s|(?<=다\.)", line)[0].strip()
@@ -396,17 +439,15 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
         if sent.endswith(("?", "？", "나", "까", "인가", "을까", "을까.")):
             score -= 2
         cands.append((score, sent))
+    # 이슈 핵심어(2자+)가 있으면 점수 0 이하(핵심어·인용·실체어 없음) 줄은 채택하지 않는다 → 다음 근거(보도)로
+    # (예전: 전부 0점이면 가장 긴 줄 → 설명란 광고 줄이 정의로 뽑힘)
+    if any(len(k) >= 2 for k in keys):
+        cands = [c for c in cands if c[0] > 0]
     if not cands:
         return None
     cands.sort(key=lambda x: (-x[0], -len(x[1])))
-    best = cands[0][1]
-    # 인용만 뽑혔고 이슈명이 없으면 앞에 붙여 한 문장으로
-    if keys and not any(k in best for k in keys if len(k) >= 2):
-        prefix = keys[0]
-        best = f"{prefix} 관련 {best}".strip()
-        if len(best) > max_len:
-            best = best[: max_len - 1].rstrip() + "…"
-    return best
+    # '{이슈명} 관련' 접두는 붙이지 않는다(관련성 없는 줄을 가려 버림) — 관련성은 _is_weak_one_liner가 판단
+    return cands[0][1]
 
 
 _SUBSTANCE_WORDS = ("발언", "비판", "고발", "논란", "파장", "합당", "기소", "공소", "탄핵", "의혹",
@@ -434,8 +475,17 @@ def _is_broadcast_header(line: str, issue_name: str = None) -> bool:
     return len(rest.replace(" ", "")) <= 6
 
 
-def _is_weak_one_liner(line, issue_name=None) -> bool:
-    """정의 한 줄로 쓰기에 부적합(잡음·광고·방송 라벨·실체 없음)이면 True."""
+def _issue_core_words(issue_name=None, aliases=None):
+    """이슈 핵심어: 이슈명(논란/이슈/사건 제거)과 그 토막(2자+), 키워드(aliases)."""
+    base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()
+    words = [base] if len(base) >= 2 else []
+    words += [p for p in re.split(r"[\s/·]+", base) if len(p) >= 2]
+    words += [a for a in (aliases or []) if a and len(str(a)) >= 2]
+    return list(dict.fromkeys(words))
+
+
+def _is_weak_one_liner(line, issue_name=None, aliases=None) -> bool:
+    """정의 한 줄로 쓰기에 부적합(잡음·광고·방송 라벨·실체 없음·이슈와 무관)이면 True."""
     s = str(line or "").strip()
     if not s:
         return True
@@ -449,6 +499,11 @@ def _is_weak_one_liner(line, issue_name=None) -> bool:
     body = re.sub(r"\s*관련\s*", " ", body).strip()
     has_sub = any(w in s for w in _SUBSTANCE_WORDS) or any(q in s for q in ("“", '"', "‘"))
     if len(body.replace(" ", "")) < 15 and not has_sub:
+        return True
+    # 관련성 하한: 이슈 핵심어(키워드 포함)도 실체어도 없으면 거부
+    core_words = _issue_core_words(issue_name, aliases)
+    # (핵심어를 만들 수 없는 이슈명이면 판단 근거가 없어 건너뜀)
+    if core_words and not any(w in s for w in core_words) and not any(w in s for w in _SUBSTANCE_WORDS):
         return True
     return False
 
@@ -470,7 +525,7 @@ def _is_omnibus_for(title: str, issue_name: str = None) -> bool:
 def _title_one_liner(title: str, issue_name: str = None, max_len: int = ONE_LINER_MAX):
     """설명·자막이 광고뿐일 때 제목에서 담백한 한 줄. 자극 물음표·말줄임은 정리."""
     t = _HASHTAG_RE.sub("", _URL_RE.sub("", title or "")).strip()
-    t = re.sub(r"^\[.*?\]\s*", "", t)
+    t = re.sub(r"^(\s*(\[[^\]]*\]|【[^】]*】))+\s*", "", t)  # 앞머리 [코너]·【날짜】 태그 제거
     t = t.replace("..", " ").replace("…", " ")
     t = re.sub(r"[?？]+$", "", t).strip()
     t = re.sub(r"\s+", " ", t)
@@ -492,13 +547,16 @@ def _title_one_liner(title: str, issue_name: str = None, max_len: int = ONE_LINE
     return sent
 
 
-def _pick_standalone(videos):
+def _pick_standalone(videos, core_words=None):
+    """단독 영상 후보. core_words가 있으면 제목에 핵심어가 있는 영상을 먼저, 그다음 조회수순."""
     cands = [v for v in (videos or []) if v.get("프레임") not in NON_STANDALONE_FRAMES]
-    return sorted(cands, key=lambda v: int(v.get("조회수") or 0), reverse=True)
+    words = [w for w in (core_words or []) if w]
+    return sorted(cands, key=lambda v: (any(w in str(v.get("제목") or "") for w in words),
+                                        int(v.get("조회수") or 0)), reverse=True)
 
 
-def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5):
-    picked = _pick_standalone(videos)[:max_videos]
+def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5, aliases=None):
+    picked = _pick_standalone(videos, _issue_core_words(issue_name))[:max_videos]
     for v in picked:
         # 여러 주제 묶음 LIVE에서 이슈가 한 토막뿐이면 설명·자막은 다른 주제 잡음 → 건너뜀
         if _is_omnibus_for(v.get("제목") or "", issue_name):
@@ -509,7 +567,7 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
                 line = summarize(raw, issue_name=issue_name)
             except TypeError:
                 line = summarize(raw)
-            if line and _is_weak_one_liner(line, issue_name):
+            if line and _is_weak_one_liner(line, issue_name, aliases):
                 print(f"ℹ️ [issue_defs] '{issue_name}' {kind} 약한 한 줄 거부: {line[:40]}")
                 line = None
             if line:
@@ -521,14 +579,17 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
             line = summarize(n.get("text") or n.get("title"), issue_name=issue_name)
         except TypeError:
             line = summarize(n.get("text") or n.get("title"))
-        if line and _is_weak_one_liner(line, issue_name):
+        if line and _is_weak_one_liner(line, issue_name, aliases):
             print(f"ℹ️ [issue_defs] '{issue_name}' news 약한 한 줄 거부: {line[:40]}")
             line = None
         if line:
             return line, {"evidence_channel": n.get("channel") or "", "evidence_title": n.get("title") or "",
                           "evidence_url": n.get("url") or "", "evidence_kind": "news"}
-    # 마지막: 상위 단독 영상 제목
+    # 마지막: 상위 단독 영상 제목 (제목에 이슈 핵심어·키워드가 없는 영상은 근거로 쓰지 않음)
+    core_words = _issue_core_words(issue_name, aliases)
     for v in picked:
+        if core_words and not any(w in str(v.get("제목") or "") for w in core_words):
+            continue
         line = _title_one_liner(v.get("제목") or "", issue_name)
         if line and (_is_broadcast_header(line, issue_name) or _JUNK_LINE_RE.search(line)):
             line = None
@@ -557,7 +618,8 @@ def build_defs(issue_rows, videos, source="yeogwon", *, now=None, summarize=None
         name = strip_auto(raw)
         try:
             line, ev = _build_one(name, (videos or {}).get(raw) or (videos or {}).get(name),
-                                  summarize, describe, caption, news)
+                                  summarize, describe, caption, news,
+                                  aliases=aliases.get(raw) or aliases.get(name))
         except Exception as e:
             print(f"⚠️ [issue_defs] '{name}' 정의 생성 실패: {_redact(e)}")
             continue
