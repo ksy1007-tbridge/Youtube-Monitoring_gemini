@@ -24,7 +24,7 @@ MAX_ILLUSION = 3
 MEDIA_SCANDEL_KEYS = ("주진우", "김어준")
 
 # 신규 속보 이름 힌트 (전일 issues 키가 없을 때·보조)
-NEW_BREAKING_RE = re.compile(r"속보|구속\s*연장|긴급")
+NEW_BREAKING_RE = re.compile(r"속보|긴급")
 
 DYNAMIC_TAG = " (자동)"
 
@@ -46,13 +46,13 @@ def _conc_share(conc) -> Optional[float]:
 
 
 def is_new_issue(name: str, prev_issues: Optional[dict], *, is_auto: bool = False) -> bool:
-    """전일 issues 스냅샷에 없으면 신규. 스냅샷이 없거나 비면(마이그레이션·첫날) 이름 힌트·자동만."""
+    """신규 속보 예외는 이슈명에 속보|긴급이 있을 때만. 전일 스냅샷에 없음만으로는 예외가 아니다."""
     key = strip_auto(name)
+    if not NEW_BREAKING_RE.search(key):
+        return False
     if not prev_issues:
-        return bool(is_auto and NEW_BREAKING_RE.search(key))
-    if key not in prev_issues and name not in prev_issues:
         return True
-    return False
+    return key not in prev_issues and name not in prev_issues
 
 
 def classify_issue(
@@ -220,10 +220,10 @@ def build_hanun_card(
     unclassified_rows: Sequence[dict] = (),
 ) -> str:
     """텔레그램 HTML 한눈 카드."""
-    # 이슈 정렬: 채널 수 > 조회수
+    # 이슈 정렬: 조회수 > 건수 (채널 수 우선 해제)
     issues = sorted(
         list(issue_rows),
-        key=lambda r: (int(r.get("채널수") or 0), int(r.get("조회수") or 0)),
+        key=lambda r: (int(r.get("조회수") or 0), int(r.get("건수") or 0)),
         reverse=True,
     )
 
@@ -316,12 +316,13 @@ def build_hanun_card(
         lines.append("• 해당 없음")
 
     lines += ["", f"<b>내부·편중 (참고만)</b>"]
-    body_internal = []
-    for row in internal[:MAX_INTERNAL]:
-        body_internal.append(_issue_line(row, new_exc=False))
-    for p in person_internal[:MAX_INTERNAL]:
-        body_internal.append(_person_internal_line(p))
-    lines.extend(body_internal[:MAX_INTERNAL] or ["• 해당 없음"])
+    # 인물 줄(미디어 스캔들·한동훈 체크 포함)은 내부 이슈 5줄 한도 밖
+    issue_lines = [_issue_line(row, new_exc=False) for row in internal[:MAX_INTERNAL]]
+    person_lines = [_person_internal_line(p) for p in person_internal]
+    if issue_lines or person_lines:
+        lines.extend(issue_lines + person_lines)
+    else:
+        lines.append("• 해당 없음")
 
     illusions = collect_illusion_lines(df_top_rows, unclassified_rows)
     lines += ["", f"<b>무시해도 되는 착시</b>"]

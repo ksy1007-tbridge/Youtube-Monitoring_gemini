@@ -15,6 +15,12 @@ from issue_tracker import (merge_auto_into_fixed, check_issue_name, update_histo
                            format_candidates, normalize_history, strip_tag, name_tokens)
 from hanun_card import build_hanun_card, issues_snapshot
 from issue_defs import build_defs, publish_defs
+from issue_auto import (
+    DYNAMIC_MAX_ISSUES, DYNAMIC_MAX_PERSONS, DYNAMIC_MIN_TITLES, DYNAMIC_MIN_CHANNELS,
+    DYNAMIC_TAG, DYNAMIC_MAX_CHANNEL_SHARE, DYNAMIC_HIGH_VIEW, DYNAMIC_HIGH_VIEW_EXEMPT,
+    log_thresholds, is_general_only, specificity_score, summarize_group, adopt_after_assign,
+    extract_offline_candidates, passes_thresholds, is_junk_issue_name)
+from issue_aliases import load_aliases, label_issue, aliases_for_qa
 
 # ---------------------------------------------------------
 # [환경 변수 로드]
@@ -23,6 +29,8 @@ YOUTUBE_API_KEY = os.environ.get("YOUTUBE_API_KEY")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# DRY_RUN=1: 텔레그램·KV 미게시, previous_data 미저장 (workflow_dispatch 테스트용)
+DRY_RUN = os.getenv("DRY_RUN", "").strip().lower() in ("1", "true", "yes")
 
 # Gemini 3 thinking 설정 (minimal/low/medium/high). thinking_budget은 함께 보내지 않음(400 오류).
 _THINKING_LEVELS = {"minimal", "low", "medium", "high"}
@@ -180,37 +188,8 @@ def save_raw_csv(df, now_kst) -> str:
         print(f"원본 CSV 저장 실패: {redact_secrets(e)}")
         return ""
 
-# ---------------------------------------------------------
-# [이슈 키워드 그룹 재정의 - 오탐 제거 및 구조화]
-# 키워드는 re.escape 후 OR 매칭 (정규식 특수문자 안전)
-# ---------------------------------------------------------
-ISSUE_KEYWORDS = {
-    # 인물명(강진구·이상호 기자)은 단독 키워드로 두지 않는다 → ISSUE_PERSON_TOPIC(인물 AND 주제어)로만 매칭
-    "여론조사 조작 공방": [
-        "여론조사 조작", "여조 조작", "여조 공작", "여론조작", "여론 조작", "조작 폭로", "조작 방송",
-        "허위 응답", "중복 투표", "1인 84표", "1인 80표"
-    ],
-    "김어준 논란": ["김어준"],  # 정제 제목(제목_정제) 기준 매칭
-    "당내 계파 갈등": ["친청", "친명", "당내 반란", "계파", "지도부 갈등", "최민희", "탈당"],
-    "조희대/사법부": ["조희대", "대법원장"],
-    "부동산·증시": ["부동산", "세제", "코스피", "삼성전자", "주주환원", "집값"],
-    "유시민 논란": ["유시민"],
-    "중수청/김지용": ["김지용", "중수청"],
-    "외교·순방(UN·걸프·우크라)": ["순방", "유엔", "UN총회", "UN 연설", "걸프", "정상회담", "젤렌스키", "우크라", "포로 송환", "포로송환"],
-    "DMZ 지뢰/안보": ["DMZ", "비무장지대", "지뢰"],
-    "강훈식·성남라인": ["강훈식", "성남라인", "성남 라인"],
-}
-
-# 고정 이슈의 '인물 AND 주제어' 조건 {이슈명: [([인물 별칭...], [주제어...]), ...]}
-# 예: '강진구 기자 우산 피습' 제목은 여론조사 조작 공방이 아님 / '강진구 여론조작 폭로'는 매칭
-ISSUE_PERSON_TOPIC = {
-    "여론조사 조작 공방": [(["강진구", "이상호 기자"], ["여론조사", "여조", "여론조작", "여론 조작"])],
-}
-# 고정 이슈를 카드 이슈로 올리는 최소 영상 수 (채널 2개 이상이면 건수와 무관하게 통과).
-# 기본 1(기존과 동일). 특정 사건용으로 만든 고정 버킷은 2 — 1건짜리 오탐이 카드·Q&A 정의로 번지는 것 방지.
-FIXED_ISSUE_MIN_TITLES_DEFAULT = 1
-FIXED_ISSUE_MIN_TITLES = {"여론조사 조작 공방": 2}
-FIXED_ISSUE_MIN_CHANNELS = 2
+# 고정 이슈 10칸(ISSUE_KEYWORDS)은 제거됨. 이슈는 자동 추출만으로 산출한다.
+# 채택 임계·상한은 issue_auto.py (한곳에서 변경). 이름 사전은 issue_aliases.json (라벨 전용).
 
 # ---------------------------------------------------------
 # [프레임 키워드] 위에서부터 첫 매칭 프레임으로 판정 (순서가 우선순위)
@@ -245,13 +224,8 @@ FRAME_CONTEXT_LINKS = {"검찰/사법": ["조희대"]}
 CONCENTRATION_TOP_SHARE = 50.0      # 최대채널 조회 비중(%) 초과 시 편중
 CONCENTRATION_TOP2_VID_SHARE = 60.0  # 상위 2개 영상 조회 비중(%) 초과 시 편중 (영상 3건 이상일 때만)
 
-DYNAMIC_MAX_ISSUES = 5
-DYNAMIC_MAX_PERSONS = 5
-DYNAMIC_MIN_TITLES = 3
-DYNAMIC_MIN_CHANNELS = 2
-DYNAMIC_TAG = " (자동)"
-DYNAMIC_SINGLE_CHANNEL_SHARE = 80.0  # 자동 이슈 최대채널 조회 비중(%) 이상이면 '단일 채널 주의' 표시 + 순위 하향
-DYNAMIC_HIGH_VIEW = 500000   # 미분류/기타 영상 1건이라도 이 조회수 이상이면 자동 이슈 후보 (제목 수·채널 수 조건 면제)
+# DYNAMIC_* 채택 임계는 issue_auto에서 import. 80%는 채택 탈락 기본값 (소연이 7일 표로 확정).
+DYNAMIC_SINGLE_CHANNEL_SHARE = DYNAMIC_MAX_CHANNEL_SHARE
 DYNAMIC_ALIAS_STOPWORDS = {
     "대통령", "의원", "대표", "장관", "총리", "청장", "위원장", "원장", "여사", "기자", "작가", "의장", "후보",
     "민주당", "국민의힘", "국힘", "정부", "청와대", "대통령실", "여당", "야당", "검찰", "법원", "국회",
@@ -376,26 +350,6 @@ def match_titles(series, keywords):
     return series.str.contains(pattern, regex=True, na=False)
 
 
-def person_topic_mask(series, issue_name):
-    """ISSUE_PERSON_TOPIC: 인물 별칭과 주제어가 제목에 함께 있을 때만 True."""
-    mask = series.map(lambda _: False).astype(bool)
-    for persons, topics in ISSUE_PERSON_TOPIC.get(issue_name, []):
-        mask |= match_titles(series, persons) & match_titles(series, topics)
-    return mask
-
-
-def fixed_issue_title_mask(series, issue_name, keywords):
-    """고정 이슈 매칭: 키워드 OR + 문맥 별칭 + 인물 AND 주제어."""
-    return match_titles(series, keywords) | context_mask(series, ISSUE_CONTEXT_LINKS.get(issue_name)) \
-        | person_topic_mask(series, issue_name)
-
-
-def fixed_issue_passes(issue_name, cnt, channel_cnt) -> bool:
-    """고정 이슈 카드 노출 최소 조건: 건수 >= 이슈별 최소치 또는 채널 >= FIXED_ISSUE_MIN_CHANNELS."""
-    min_titles = FIXED_ISSUE_MIN_TITLES.get(issue_name, FIXED_ISSUE_MIN_TITLES_DEFAULT)
-    return cnt >= min_titles or (cnt > 0 and channel_cnt >= FIXED_ISSUE_MIN_CHANNELS)
-
-
 def issue_match_mask(series, keywords, must=None):
     """이슈 매칭: keywords 중 하나 이상(OR). must(인물 별칭)가 있으면 그 인물도 함께 있어야 함(AND).
     예: '국민의힘 장동혁 대표 욕설' → (장동혁) AND (욕설|녹취…). 인물명 하나만으로는 매칭되지 않는다."""
@@ -442,85 +396,122 @@ def dedupe_reuploads(df):
     return df.drop(index=list(drop)), log
 
 
-def fixed_issue_mask(df):
-    """고정 이슈(ISSUE_KEYWORDS) 중 하나라도 매칭되는 영상의 bool Series (종합방송 제외)."""
-    titles = df["제목_정제"]
-    mask = titles.map(lambda _: False).astype(bool)
-    for issue_name, keywords in ISSUE_KEYWORDS.items():
-        mask |= fixed_issue_title_mask(titles, issue_name, keywords)
-    return mask & (df["프레임"] != "종합방송")
-
-
 def extract_major_issues(df, issue_keywords=None, absorbed=None, issue_must=None):
-    """고정 이슈는 기존 방식(이슈별 키워드 매칭)으로 집계. '(자동)' 이슈는 고정 이슈나 앞선 자동 이슈가
-    이미 센 영상을 제외하고 집계해 같은 영상이 두 번 세지지 않게 한다. absorbed: {고정/자동 이슈명: [흡수된 자동 이슈명]}."""
-    issue_keywords = issue_keywords or ISSUE_KEYWORDS
+    """자동 이슈만 집계. 영상 1건은 이슈 1곳(더 구체적 키워드, 동점이면 조회·건수).
+    채택 후 이름 사전으로 라벨만 붙인다. 80% 규칙은 배정 후 적용하고, 그 영향은 별도 로그."""
+    issue_keywords = issue_keywords or {}
     absorbed = absorbed or {}
     issue_must = AUTO_ISSUE_MUST if issue_must is None else issue_must
-    issue_results = []
-    matched_indices = set()
-    issue_debug = {}
-
     df_matchable = df[df["프레임"] != "종합방송"]
-    # 고정 이슈를 먼저 집계해야 자동 이슈 중복 제외가 성립
-    ordered = [n for n in issue_keywords if not n.endswith(DYNAMIC_TAG)] + [n for n in issue_keywords if n.endswith(DYNAMIC_TAG)]
+    aliases_map = load_aliases()
 
-    for issue_name in ordered:
-        keywords = issue_keywords[issue_name]
-        is_auto = issue_name.endswith(DYNAMIC_TAG)
+    issues = []
+    for name, kws in issue_keywords.items():
         titles = df_matchable["제목_정제"]
-        if is_auto:
-            mask = issue_match_mask(titles, keywords, issue_must.get(issue_name)) \
-                | context_mask(titles, ISSUE_CONTEXT_LINKS.get(issue_name))
-            mask &= ~df_matchable.index.isin(list(matched_indices))
-        else:
-            mask = fixed_issue_title_mask(titles, issue_name, keywords)
+        mask = issue_match_mask(titles, kws, issue_must.get(name))
+        if issue_must.get(name):
+            mask = mask | (context_mask(titles, issue_must.get(name)) & match_titles(titles, kws))
+        if AUTO_ISSUE_AND.get(name):
+            mask = mask & match_titles(titles, AUTO_ISSUE_AND.get(name))
         sel = df_matchable[mask]
+        issues.append({
+            "name": name,
+            "keywords": list(kws),
+            "must": issue_must.get(name),
+            "views": int(sel["조회수"].sum()) if len(sel) else 0,
+            "cnt": int(len(sel)),
+            "_index": set(sel.index),
+        })
 
-        cnt = len(sel)
-        if cnt > 0 and not is_auto and not fixed_issue_passes(issue_name, cnt, sel["채널명"].nunique()):
-            print(f"ℹ️ [이슈] 고정 이슈 '{issue_name}' {cnt}건(1채널) → 최소 조건 미달로 카드 제외(미분류 처리)")
+    # 영상 1건 1이슈
+    by_issue = {iss["name"]: [] for iss in issues}
+    claimed = set()
+    for idx, row in df_matchable.iterrows():
+        cands = [iss for iss in issues if idx in iss["_index"]]
+        if not cands:
             continue
-        if cnt > 0:
-            matched_indices.update(sel.index)
-            channel_cnt = sel["채널명"].nunique()
-            total_views = int(sel["조회수"].sum())
-            has_mbc = "MBC 라디오 시사" in sel["채널명"].values
-            conc = channel_concentration(sel)
-            single_ch = bool(is_auto and conc and conc["top_share"] >= DYNAMIC_SINGLE_CHANNEL_SHARE)
-            mbc_tag = " [MBC 포함]" if has_mbc else " [진영 내부]"
+        def _key(iss):
+            return (specificity_score(iss["name"], iss.get("keywords"), iss.get("must")),
+                    (int(iss.get("views") or 0), int(iss.get("cnt") or 0)))
+        best = max(cands, key=_key)
+        by_issue[best["name"]].append({
+            "id": idx, "title": str(row["제목_정제"]), "channel": row["채널명"],
+            "views": int(row["조회수"] or 0),
+        })
+        claimed.add(idx)
 
-            issue_results.append({
-                "이슈명": issue_name,
-                "건수": cnt,
-                "채널수": channel_cnt,
-                "조회수": total_views,
-                "mbc_tag": mbc_tag,
-                "concentration": conc,
-                "is_auto": is_auto,
-                "single_channel": single_ch,
-                "merged": [strip_tag(m) for m in absorbed.get(issue_name, [])],
-            })
+    adopted, dropped, dropped_share = adopt_after_assign(issues, by_issue, apply_share=True)
+    adopted_nos, _, _ = adopt_after_assign(issues, by_issue, apply_share=False)
+    adopted_names = {a["name"] for a in adopted}
+    share_only = [r for r in adopted_nos if r["name"] not in adopted_names]
+    if share_only:
+        print("ℹ️ [자동 추출] 80% 규칙만으로 탈락(소연 확인용): " + ", ".join(
+            f"{strip_tag(r['name'])} {r['top_share']}%" for r in share_only))
 
+    # 같은 표시명으로 라벨된 묶음은 합친다
+    grouped = {}
+    for rec in adopted:
+        raw = rec["name"]
+        labeled = label_issue(strip_tag(raw), rec.get("keywords"), aliases_map)
+        if labeled != strip_tag(raw):
+            print(f"ℹ️ [이름 사전] 라벨: '{strip_tag(raw)}' → '{labeled}'")
+        rec["label_from"] = strip_tag(raw) if labeled != strip_tag(raw) else ""
+        rec["display"] = labeled
+        if labeled in grouped:
+            g = grouped[labeled]
+            g["videos"] = (g.get("videos") or []) + (rec.get("videos") or [])
+            g["keywords"] = list(dict.fromkeys(list(g.get("keywords") or []) + list(rec.get("keywords") or [])))
+            g["merged"] = list(dict.fromkeys(list(g.get("merged") or []) + [strip_tag(m) for m in absorbed.get(raw, [])] + ([strip_tag(raw)] if strip_tag(raw) != labeled else [])))
+            st = summarize_group(g["videos"])
+            g.update(st)
+        else:
+            rec["merged"] = [strip_tag(m) for m in absorbed.get(raw, [])]
+            grouped[labeled] = rec
+
+    issue_results, issue_debug = [], {}
+    matched_indices = set()
+    ordered = sorted(grouped.values(), key=lambda r: (int(r.get("views") or 0), int(r.get("cnt") or 0)), reverse=True)
+    for rec in ordered:
+        display = rec["display"]
+        sel_vids = rec.get("videos") or []
+        idxs = [v["id"] for v in sel_vids]
+        matched_indices.update(idxs)
+        sel = df_matchable.loc[list(idxs)] if idxs else df_matchable.iloc[0:0]
+        conc = channel_concentration(sel) if len(sel) else None
+        has_mbc = (len(sel) > 0 and "MBC 라디오 시사" in sel["채널명"].values)
+        issue_results.append({
+            "이슈명": display,
+            "건수": rec["cnt"],
+            "채널수": rec["channels"],
+            "조회수": rec["views"],
+            "mbc_tag": " [MBC 포함]" if has_mbc else " [진영 내부]",
+            "concentration": conc,
+            "is_auto": True,
+            "single_channel": bool(conc and conc["top_share"] >= DYNAMIC_MAX_CHANNEL_SHARE),
+            "merged": rec.get("merged") or [],
+            "keywords": list(rec.get("keywords") or []),
+            "must": rec.get("must"),
+            "label_from": rec.get("label_from") or "",
+            "video_indices": idxs,
+        })
+        if len(sel):
             top5 = sel.sort_values(by="조회수", ascending=False).head(5)
-            issue_debug[issue_name] = [
+            issue_debug[display] = [
                 {"채널": r["채널명"], "조회수": int(r["조회수"]), "제목": r["제목"]}
                 for _, r in top5.iterrows()
             ]
+        print(f"ℹ️ [자동 추출] 채택 '{display}' {rec['cnt']}건/{rec['channels']}채널/{rec['views']:,}회/"
+              f"최대{rec.get('top_share')}%" + (f" (원이름 {rec['label_from']})" if rec.get("label_from") else ""))
 
     df_issues = pd.DataFrame(issue_results)
     if not df_issues.empty:
-        # 단일 채널 주의(자동 이슈, 최대채널 80% 이상)는 다른 이슈 뒤로 내린다
-        df_issues = df_issues.sort_values(by=["single_channel", "채널수", "조회수"],
-                                          ascending=[True, False, False]).reset_index(drop=True)
+        df_issues = df_issues.sort_values(by=["조회수", "건수"], ascending=[False, False]).reset_index(drop=True)
 
-    # 미분류 = 이슈 미매칭 영상 중 종합방송 제외 (종합방송은 이슈 판정 대상이 아니므로 새 쟁점 후보 칸에서도 뺀다)
     unclassified_df = df.drop(index=list(matched_indices), errors="ignore")
     unclassified_df = unclassified_df[unclassified_df["프레임"] != "종합방송"]
     df_unclassified_top5 = unclassified_df.sort_values(by="조회수", ascending=False).head(5)
 
     print_issue_debug(issue_debug)
-
     return df_issues, df_unclassified_top5
 
 
@@ -558,15 +549,23 @@ def _parse_json_loose(text):
     return None
 
 
+def _person_alias_map():
+    m = {p: list(dict.fromkeys([p] + list(als))) for p, als in TRACK_PERSONS.items()}
+    for p in PERSON_FACTS.get("persons") or []:
+        if p.get("name"):
+            m.setdefault(p["name"], [p["name"]])
+    return m
+
+
 def extract_dynamic_entities(all_titles, pool_titles=None, high_view_titles=None):
-    """제목 목록에서 오늘의 신규 이슈/인물 후보를 Gemini로 1회 추출.
-    pool_titles(고정 이슈 미매칭 또는 '기타' 프레임)에는 [미분류], high_view_titles에는 [고조회] 표시를 붙여
-    같은 호출 안에서 신규 이슈를 미분류 영상 위주로 뽑게 한다(추가 API 호출 없음).
-    반환: {"issues": [{"name", "keywords"}], "persons": [{"name", "aliases"}]} / 실패 시 빈 후보."""
+    """제목 목록에서 오늘의 이슈/인물 후보를 Gemini로 1회 추출. 풀은 종합방송 제외 전체.
+    실패·키 없음이면 오프라인 후보를 쓴다(고정 사전 없음)."""
     empty = {"issues": [], "persons": []}
     api_key = GEMINI_API_KEY or os.environ.get("GEMINI_API_KEY")
-    if not api_key or not api_key.strip() or not all_titles:
+    if not all_titles:
         return empty
+    if not api_key or not api_key.strip():
+        return extract_offline_candidates(all_titles, _person_alias_map())
 
     try:
         client = genai.Client(api_key=api_key.strip(), http_options=genai.types.HttpOptions(api_version="v1beta"))  # google-genai 3.x 기본 v1 대비 (11/10)
@@ -584,8 +583,9 @@ def extract_dynamic_entities(all_titles, pool_titles=None, high_view_titles=None
         [규칙]
         - keywords/aliases는 반드시 아래 제목에 글자 그대로 등장하는 문자열만 쓰세요.
         - 성씨+직함(예: '한 전 대표', '김 청장', '이 대통령'), 한 글자, 직함 단독('대통령', '의원'), 짧은 영문 약어('UN')는 쓰지 마세요.
-        - 이슈는 최대 8개, 인물은 최대 8명. 제목 3개 이상에 등장하는 것만.
-        - 이슈는 [미분류] 표시 제목(기존 이슈 목록에 안 잡힌 영상)에서 우선 찾으세요. [고조회] 표시 제목은 1개뿐이어도 이슈로 뽑으세요.
+        - 이슈는 최대 15개, 인물은 최대 8명. 제목 3개 이상·여러 채널에 등장할 법한 것만.
+        - 전체 제목을 대상으로 찾으세요. 인물이 관련되면 그 인물과 사건어가 제목에 함께 있는 것만.
+        - 일반어(의혹, 스캔들, 논란, 성남라인 등)나 인물명만으로는 이슈를 만들지 마세요.
         - 이슈명에 인물을 넣을 때는 현재 직함만 쓰세요(예: '국민의힘 장동혁 대표'). 직함이 불확실하면 이름만 쓰세요.
         - 이슈명은 사건·쟁점을 가리키는 중립 명사구로 쓰세요. 제목의 따옴표 인용, 의문형 주장, 비유·자극 표현(무릎·굴복·몰락·충격 등)은 이슈명에 쓰지 마세요.
         - 이슈에 인물이 관련되면 keywords에 인물명과 사건어(예: '욕설', '무죄')를 함께 넣으세요.
@@ -609,8 +609,8 @@ def extract_dynamic_entities(all_titles, pool_titles=None, high_view_titles=None
 
         data = _parse_json_loose(getattr(response, "text", None))
         if not isinstance(data, dict):
-            print("ℹ️ [자동 추출] JSON 파싱 실패 → 고정 사전만 사용")
-            return empty
+            print("ℹ️ [자동 추출] JSON 파싱 실패 → 오프라인 후보")
+            return extract_offline_candidates(all_titles, _person_alias_map())
 
         out = {"issues": [], "persons": []}
         for it in data.get("issues") or []:
@@ -626,36 +626,31 @@ def extract_dynamic_entities(all_titles, pool_titles=None, high_view_titles=None
                     out["persons"].append({"name": it["name"].strip(), "aliases": als})
         return out
     except Exception as e:
-        print(f"ℹ️ [자동 추출] 실패 → 고정 사전만 사용 ({redact_secrets(e)})")
-        return empty
+        print(f"ℹ️ [자동 추출] 실패 → 오프라인 후보 ({redact_secrets(e)})")
+        return extract_offline_candidates(all_titles, _person_alias_map())
 
 
 # 자동 이슈별 필수 인물 별칭 {이슈명(자동): [별칭...]} — filter_dynamic_entities가 채우고 extract_major_issues가 읽는다
 AUTO_ISSUE_MUST = {}
+AUTO_ISSUE_AND = {}  # 이슈명 사건어가 키워드에 없으면 제목 AND 조건
 
 
 def filter_dynamic_entities(df, candidates, pool_mask=None):
-    """자동 추출 후보를 코드로 결정적으로 검증: 제목 >= DYNAMIC_MIN_TITLES, 채널 >= DYNAMIC_MIN_CHANNELS,
-    고정 사전과 중복 제외, 최대 개수 제한. 반환: (issue_dict, person_dict, absorbed) — 키에 '(자동)' 태그,
-    absorbed = {고정 이슈명: [흡수된 자동 이슈명]}.
-    이슈는 pool_mask(미분류·'기타' 영상)에서만 검증하고, 그 안에서 DYNAMIC_HIGH_VIEW 이상 영상이 있으면 건수 조건 면제.
-    이슈명은 person_facts 직함·여야 점검을 통과해야 한다(경고 시 키워드명으로 교체, 그래도 경고면 제외)."""
+    """자동 추출 후보를 결정적으로 검증. 풀 = 종합방송 제외 전체. 이름 사전은 쓰지 않음.
+    80% 규칙은 배정 후 extract_major_issues에서 적용(여기선 제목·채널 하한만).
+    반환: (issue_dict, person_dict, absorbed)."""
     dyn_issues, dyn_persons, absorbed = {}, {}, {}
     AUTO_ISSUE_MUST.clear()
+    AUTO_ISSUE_AND.clear()
+    log_thresholds()
     try:
-        fixed_issue_kws = {k for kws in ISSUE_KEYWORDS.values() for k in kws}
         fixed_person_aliases = {a for als in TRACK_PERSONS.values() for a in als} | set(TRACK_PERSONS.keys())
         fixed_person_aliases |= {trig for rules in CONTEXT_ALIASES.values() for trig, _ in rules}
-        df_matchable = df[df["프레임"] != "종합방송"]
-        df_pool = df_matchable if pool_mask is None else df_matchable[pool_mask.reindex(df_matchable.index, fill_value=False)]
+        df_pool = df[df["프레임"] != "종합방송"]
 
-        # 인물 별칭 사전: 고정 인물 + 오늘 LLM 인물 후보 + persons_current.json 인물
-        person_alias_map = {p: list(dict.fromkeys([p] + list(als))) for p, als in TRACK_PERSONS.items()}
+        person_alias_map = _person_alias_map()
         for it in candidates.get("persons", []):
             person_alias_map.setdefault(it["name"], list(dict.fromkeys([it["name"]] + list(it["aliases"]))))
-        for p in PERSON_FACTS.get("persons") or []:
-            if p.get("name"):
-                person_alias_map.setdefault(p["name"], [p["name"]])
 
         def persons_in(name, kws):
             """이슈명·키워드에 등장하는 인물 → 그 인물의 별칭(AND 조건). 여러 명이면 이슈명에 먼저 나온 1명."""
@@ -665,42 +660,51 @@ def filter_dynamic_entities(df, candidates, pool_mask=None):
             hits = sorted(h for h in hits if h[0] >= 0)
             return hits[0][2] if hits else None
 
-        def passes(frame_df, kws, allow_high_view=False, must=None):
-            sel = frame_df[issue_match_mask(frame_df["제목_정제"], kws, must)]
-            if allow_high_view and len(sel) and int(sel["조회수"].max()) >= DYNAMIC_HIGH_VIEW:
-                return True
-            return len(sel) >= DYNAMIC_MIN_TITLES and sel["채널명"].nunique() >= DYNAMIC_MIN_CHANNELS
+        def pre_ok(kws, must=None, and_terms=None):
+            sel = df_pool[issue_match_mask(df_pool["제목_정제"], kws, must)]
+            if issue_must_ctx := must:
+                sel_ctx = df_pool[context_mask(df_pool["제목_정제"], issue_must_ctx) & match_titles(df_pool["제목_정제"], kws)]
+                sel = df_pool.loc[sel.index.union(sel_ctx.index)]
+            if and_terms and len(sel):
+                sel = sel[match_titles(sel["제목_정제"], and_terms)]
+            ok, reason = passes_thresholds(len(sel), int(sel["채널명"].nunique()) if len(sel) else 0,
+                                           0.0, int(sel["조회수"].max()) if len(sel) else 0,
+                                           apply_share=False)
+            return ok, reason, sel
 
         for it in candidates.get("issues", []):
-            if len(dyn_issues) >= DYNAMIC_MAX_ISSUES:
-                break
             name = it["name"]
-            # 고정 이슈와 키워드/별칭이 겹치면 별도 집계하지 않고 고정 이슈로 흡수 (예: '조희대 탄핵' → 조희대/사법부)
-            _, hit = merge_auto_into_fixed({f"{name}{DYNAMIC_TAG}": it["keywords"]}, ISSUE_KEYWORDS, ISSUE_CONTEXT_LINKS)
-            if hit:
-                if passes(df_matchable, it["keywords"]):
-                    for f, names in hit.items():
-                        absorbed.setdefault(f, []).extend(names)
-                continue
-            # 인물명은 지우지 않고 AND 조건(must)으로 쓴다. 나머지 키워드(사건어)가 하나 이상 있어야 한다.
             must = persons_in(name, it["keywords"])
             must_set = set(must or [])
-            kws = [k for k in it["keywords"] if k not in fixed_issue_kws and k not in must_set]
-            if must and not kws:   # 키워드가 인물명뿐이면 이슈명에서 사건어를 찾음 (예: '장동혁 욕설' → '욕설')
-                kws = [t for t in name_tokens(name) if t not in must_set and not any(a in t for a in must_set)]
-            if not kws or name in ISSUE_KEYWORDS or f"{name}{DYNAMIC_TAG}" in dyn_issues:
+            kws = [k for k in it["keywords"] if k not in must_set]
+            if must and not kws:
+                kws = [tok for tok in name_tokens(name) if tok not in must_set and not any(a in tok for a in must_set)]
+            if is_general_only(kws, must) or is_junk_issue_name(name):
+                print(f"ℹ️ [자동 추출] 일반어·인물 단독이라 제외: {name}")
                 continue
-            if passes(df_pool, kws, allow_high_view=True, must=must):
-                checked = check_issue_name(name, kws, PERSON_FACTS, person_names=list(person_alias_map))
-                if not checked:
-                    print(f"ℹ️ [자동 추출] 이슈명 직함·여야 점검 실패로 제외: {name}")
-                    continue
-                if checked in ISSUE_KEYWORDS or f"{checked}{DYNAMIC_TAG}" in dyn_issues:
-                    continue
-                dyn_issues[f"{checked}{DYNAMIC_TAG}"] = kws
-                if must:
-                    AUTO_ISSUE_MUST[f"{checked}{DYNAMIC_TAG}"] = list(must)
-                print(f"ℹ️ [자동 추출] 이슈 매칭 조건: {checked} = 인물({'|'.join(must or []) or '없음'}) AND 키워드({'|'.join(kws)})")
+            if not kws or f"{name}{DYNAMIC_TAG}" in dyn_issues:
+                continue
+            name_ev = [tok for tok in name_tokens(name) if tok not in must_set]
+            and_terms = None
+            if name_ev and not any(any(e == k or e in k or k in e for k in kws) for e in name_ev):
+                and_terms = name_ev
+            ok, reason, _sel = pre_ok(kws, must, and_terms)
+            if not ok:
+                print(f"ℹ️ [자동 추출] 하한 미달 제외: {name} ({reason})")
+                continue
+            checked = check_issue_name(name, kws, PERSON_FACTS, person_names=list(person_alias_map))
+            if not checked:
+                print(f"ℹ️ [자동 추출] 이슈명 직함·여야 점검 실패로 제외: {name}")
+                continue
+            tagged = f"{checked}{DYNAMIC_TAG}"
+            if tagged in dyn_issues:
+                continue
+            dyn_issues[tagged] = kws
+            if must:
+                AUTO_ISSUE_MUST[tagged] = list(must)
+            if and_terms:
+                AUTO_ISSUE_AND[tagged] = list(and_terms)
+            print(f"ℹ️ [자동 추출] 이슈 매칭 조건: {checked} = 인물({'|'.join(must or []) or '없음'}) AND 키워드({'|'.join(kws)})")
 
         for it in candidates.get("persons", []):
             if len(dyn_persons) >= DYNAMIC_MAX_PERSONS:
@@ -709,11 +713,31 @@ def filter_dynamic_entities(df, candidates, pool_mask=None):
             als = it["aliases"]
             if name in TRACK_PERSONS or any(a in fixed_person_aliases for a in als) or f"{name}{DYNAMIC_TAG}" in dyn_persons:
                 continue
-            if passes(df, als):
+            sel = df[match_titles(df["제목_정제"], als)]
+            if len(sel) >= DYNAMIC_MIN_TITLES and sel["채널명"].nunique() >= DYNAMIC_MIN_CHANNELS:
                 dyn_persons[f"{name}{DYNAMIC_TAG}"] = als
+
+        dyn_issues, absorbed = merge_auto_into_fixed(dyn_issues)
+        def _remap(src):
+            new_map = {}
+            if absorbed:
+                for kept, names in absorbed.items():
+                    if kept in src:
+                        new_map[kept] = src[kept]
+                    for n in names:
+                        if n in src and kept not in new_map:
+                            new_map[kept] = src[n]
+            for k, v in src.items():
+                if k in dyn_issues:
+                    new_map.setdefault(k, v)
+            src.clear()
+            src.update(new_map)
+        _remap(AUTO_ISSUE_MUST)
+        _remap(AUTO_ISSUE_AND)
     except Exception as e:
-        print(f"ℹ️ [자동 추출] 검증 실패 → 고정 사전만 사용 ({redact_secrets(e)})")
+        print(f"ℹ️ [자동 추출] 검증 실패 → 빈 목록 ({redact_secrets(e)})")
         AUTO_ISSUE_MUST.clear()
+        AUTO_ISSUE_AND.clear()
         return {}, {}, {}
 
     if dyn_issues or dyn_persons:
@@ -731,24 +755,25 @@ def build_issue_section(df_issues, prev_data, date_str, issue_keywords=None):
         merged_note = f" (통합: {', '.join(merged)})" if merged else ""
         if row.get("single_channel"):
             merged_note += f" ⚠단일 채널 주의({conc['top_ch']} {conc['top_share']}%)"
+        disp = strip_tag(str(row["이슈명"]))
         lines.append(
-            f"• {html.escape(normalize_report_text(str(row['이슈명'])))} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_report(conc)}{html.escape(merged_note)}"
+            f"• {html.escape(normalize_report_text(disp))} : <b>{row['건수']}건</b> | <b>{row['채널수']}채널</b> | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_report(conc)}{html.escape(merged_note)}"
         )
         lines_ai.append(
-            f"- {row['이슈명']}: {row['건수']}건 | {row['채널수']}채널 | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_ai(conc)}{merged_note}"
+            f"- {disp}: {row['건수']}건 | {row['채널수']}채널 | {row['조회수']:,}회{row['mbc_tag']}{format_concentration_ai(conc)}{merged_note}"
         )
-        if row.get("is_auto"):
-            auto_today[strip_tag(row["이슈명"])] = {"keywords": [], "cnt": int(row["건수"])}
-    for name in auto_today:
-        auto_today[name]["keywords"] = list((issue_keywords or {}).get(f"{name}{DYNAMIC_TAG}") or [])
+        auto_today[disp] = {
+            "keywords": list(row["keywords"]) if "keywords" in row and row["keywords"] is not None else list((issue_keywords or {}).get(f"{disp}{DYNAMIC_TAG}") or (issue_keywords or {}).get(disp) or []),
+            "cnt": int(row["건수"]),
+        }
     history = update_history((prev_data or {}).get("issue_history"), date_str, auto_today)
     cands = persistent_candidates(history, date_str)
     issue_lines = "\n".join(lines) if lines else "• 특이 이슈 없음"
     issue_ai = "\n".join(lines_ai) if lines_ai else "특이 이슈 없음"
     section = issue_lines
     if cands:
-        section += f"\n• 고정 목록 후보 (최근 7일 중 4일 이상 자동 추출): {html.escape(format_candidates(cands))}"
-        issue_ai += f"\n- 고정 목록 후보: {format_candidates(cands)}"
+        section += f"\n• 이름 사전 별칭 추가 제안 (최근 7일 중 4일 이상 자동 추출): {html.escape(format_candidates(cands))}"
+        issue_ai += f"\n- 이름 사전 별칭 추가 제안: {format_candidates(cands)}"
     return section, issue_lines, issue_ai, history
 
 
@@ -899,6 +924,9 @@ def load_previous_data():
 
 
 def save_current_data(data):
+    if DRY_RUN:
+        print("[DRY_RUN] previous_data.json 저장 생략")
+        return
     try:
         with open(PREV_DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -1031,6 +1059,9 @@ def wrap_expandable_chunk(chunk: str, *, part: int = 1, total: int = 1) -> str:
 
 
 def send_telegram_message(message, footer="", *, expandable=False):
+    if DRY_RUN:
+        print(f"[DRY_RUN] telegram skipped ({len(message or '')}자" + (f", footer {len(footer)}자" if footer else "") + ")")
+        return
     token = TELEGRAM_BOT_TOKEN or os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = TELEGRAM_CHAT_ID or os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -1064,23 +1095,29 @@ def send_telegram_message(message, footer="", *, expandable=False):
 
 
 def build_issue_defs(df, issue_records, issue_keywords):
-    """카드 이슈별 매칭 영상(종합방송 제외)을 모아 issue_defs.build_defs 입력으로 변환."""
-    videos = {}
+    """카드 이슈별 배정 영상(종합방송 제외)을 모아 issue_defs.build_defs 입력으로 변환.
+    aliases는 표시명의 사전 별칭 + 그날 추출 키워드."""
+    videos, aliases = {}, {}
+    aliases_map = load_aliases()
     df_m = df[df["프레임"] != "종합방송"]
+    cols = [c for c in ("채널명", "제목", "조회수", "링크", "프레임", "설명") if c in df_m.columns]
     for row in issue_records:
         name = row.get("이슈명")
-        kws = issue_keywords.get(name)
-        if not kws:
+        if not name:
             continue
-        is_auto = name.endswith(DYNAMIC_TAG)
-        if is_auto:
-            mask = issue_match_mask(df_m["제목_정제"], kws, AUTO_ISSUE_MUST.get(name)) \
-                | context_mask(df_m["제목_정제"], ISSUE_CONTEXT_LINKS.get(name))
+        idxs = row.get("video_indices") or []
+        if idxs:
+            sel = df_m.loc[df_m.index.intersection(idxs)]
         else:
-            mask = fixed_issue_title_mask(df_m["제목_정제"], name, kws)
-        cols = [c for c in ("채널명", "제목", "조회수", "링크", "프레임", "설명") if c in df_m.columns]
-        videos[name] = df_m[mask].sort_values(by="조회수", ascending=False).head(5)[cols].to_dict("records")
-    return build_defs(issue_records, videos, source="yeogwon", aliases=issue_keywords)
+            kws = list(row.get("keywords") or issue_keywords.get(name) or issue_keywords.get(f"{name}{DYNAMIC_TAG}") or [])
+            if not kws:
+                continue
+            must = row.get("must") or AUTO_ISSUE_MUST.get(name) or AUTO_ISSUE_MUST.get(f"{name}{DYNAMIC_TAG}")
+            mask = issue_match_mask(df_m["제목_정제"], kws, must)
+            sel = df_m[mask]
+        videos[name] = sel.sort_values(by="조회수", ascending=False).head(5)[cols].to_dict("records") if len(sel) and cols else []
+        aliases[name] = aliases_for_qa(name, row.get("keywords") or issue_keywords.get(name) or [], aliases_map)
+    return build_defs(issue_records, videos, source="yeogwon", aliases=aliases)
 
 
 def run_monitoring():
@@ -1190,20 +1227,18 @@ def run_monitoring():
         f"{ch} {int(c)}개({round(int(c) / total_videos * 100, 1)}%)" for ch, c in ch_counts.head(3).items()
     ) + (" [편중]" if channel_volume_flag else "")
 
-    # ----- [2-0. 오늘의 신규 이슈/인물 자동 추출 (실패 시 고정 사전만 사용)] -----
-    # 자동 이슈 후보 풀: 고정 이슈 미매칭 영상 + '기타' 프레임 영상 (종합방송 제외)
-    pool_mask = (~fixed_issue_mask(df) | (df["프레임"] == "기타")) & (df["프레임"] != "종합방송")
+    # ----- [2-0. 오늘의 이슈/인물 자동 추출 (고정 칸 없음, 실패 시 오프라인 후보)] -----
+    log_thresholds()
+    if DRY_RUN:
+        print("[DRY_RUN] 텔레그램·KV 미게시, previous_data·data 브랜치 미기록으로 실행")
+    pool_mask = df["프레임"] != "종합방송"
     pool_titles = df.loc[pool_mask, "제목_정제"].drop_duplicates().tolist()
     high_view_titles = df.loc[pool_mask & (df["조회수"] >= DYNAMIC_HIGH_VIEW), "제목_정제"].drop_duplicates().tolist()
     dyn_candidates = extract_dynamic_entities(df["제목_정제"].drop_duplicates().tolist(), pool_titles, high_view_titles)
     dyn_issues, dyn_persons, issue_absorbed = filter_dynamic_entities(df, dyn_candidates, pool_mask)
-    # 키워드/별칭이 겹치는 자동 이슈끼리도 하나로 합침 (고정 이슈 흡수는 filter 단계에서 처리)
-    dyn_issues, auto_absorbed = merge_auto_into_fixed(dyn_issues, ISSUE_KEYWORDS, ISSUE_CONTEXT_LINKS)
-    for k, v in auto_absorbed.items():
-        issue_absorbed.setdefault(k, []).extend(v)
     if issue_absorbed:
         print(f"ℹ️ [자동 추출] 겹침 통합: {issue_absorbed}")
-    issue_keywords_today = {**ISSUE_KEYWORDS, **dyn_issues}
+    issue_keywords_today = dict(dyn_issues)
     person_aliases_today = {**TRACK_PERSONS, **dyn_persons}
 
     # ----- [2. 주요 확산 이슈 집계 및 미분류 상위 5 추출] -----
@@ -1428,7 +1463,11 @@ def run_monitoring():
     send_telegram_message(hanun_html)
     # [Q&A Phase A] 이슈 한 줄 정의 → Cloudflare KV (실패해도 리포트 발송 계속)
     try:
-        publish_defs(build_issue_defs(df, issue_records, issue_keywords_today))
+        if DRY_RUN:
+            defs = build_issue_defs(df, issue_records, issue_keywords_today)
+            print(f"[DRY_RUN] KV 게시 생략 ({len((defs or {}).get('issues') or [])}건 정의 생성만)")
+        else:
+            publish_defs(build_issue_defs(df, issue_records, issue_keywords_today))
     except Exception as e:
         print(f"⚠️ [issue_defs] 생략: {redact_secrets(e)}")
     send_telegram_message(msg, audit_footer, expandable=True)

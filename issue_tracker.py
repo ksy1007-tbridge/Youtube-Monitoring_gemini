@@ -1,10 +1,10 @@
 """'주요 이슈 언급' 하이브리드(고정 목록 + 자동 추출) 보조 모듈.
 두 저장소(Youtube-Monitoring_gemini / Youtube-Monitoring_grok)에 같은 파일을 둔다. LLM 호출 없음(순수 로직).
 
-- merge_auto_into_fixed: 자동 이슈의 키워드/이름이 고정 이슈 키워드와 겹치면 고정 이슈로 흡수, 자동끼리 겹치면 하나로 합침
+- merge_auto_into_fixed: 고정 칸 흡수는 제거. 자동끼리 키워드·이름 겹침만 합침
 - check_issue_name: 자동 이슈명을 점검 — 선정적·의문형 표현(썸네일 문구)이면 다른 후보로 교체, 인물명 단독은 이슈명으로 쓰지 않음,
   직함 없는 인물명은 preferred 표기로 보정(예: '장동혁 욕설' → '국민의힘 장동혁 대표 욕설'), 직함·여야 경고가 남으면 다음 후보, 다 실패하면 제외
-- 이력(issue_history): 날짜별 자동 이슈 기록 → 최근 7일 중 4일 이상(3일 초과) 등장하면 '고정 목록 후보'
+- 이력(issue_history): 날짜별 자동 이슈 기록 → 최근 7일 중 4일 이상 등장하면 '이름 사전 별칭 추가 제안'(소연 확인 후만 편입)
 """
 import re
 from datetime import datetime, timedelta
@@ -46,29 +46,15 @@ def _overlap_score(terms_a, terms_b) -> int:
     return score
 
 
-def merge_auto_into_fixed(auto_issues: dict, fixed_issues: dict, extra_fixed_terms: dict = None):
-    """반환: (남은 자동 이슈 {이름: 키워드}, 흡수 내역 {고정 이슈명: [자동 이슈명...]}).
-    흡수된 자동 이슈의 키워드는 고정 이슈에 추가하지 않는다(고정 목록 집계·전일 비교 유지)."""
-    extra_fixed_terms = extra_fixed_terms or {}
-    fixed_terms = {f: _terms(f, kws) + list(extra_fixed_terms.get(f, [])) for f, kws in fixed_issues.items()}
-    absorbed, remaining = {}, {}
+def merge_auto_into_fixed(auto_issues: dict, fixed_issues: dict = None, extra_fixed_terms: dict = None):
+    """자동끼리 키워드·이름이 겹치면 하나로 합친다.
+    fixed_issues·extra_fixed_terms는 호환을 위해 받지만 사용하지 않는다(고정 칸 흡수 분기 제거).
+    반환: (남은 자동 이슈 {이름: 키워드}, 흡수 내역 {남은 이슈명: [합쳐진 이슈명...]})."""
+    absorbed, merged = {}, {}
     for name, kws in (auto_issues or {}).items():
-        terms = _terms(name, kws)
-        best, best_score = None, 0
-        for f, ft in fixed_terms.items():
-            s = _overlap_score(terms, ft)
-            if s > best_score:
-                best, best_score = f, s
-        if best:
-            absorbed.setdefault(best, []).append(name)
-        else:
-            remaining[name] = list(kws)
-    # 자동끼리 겹치면 먼저 나온(우선순위 높은) 항목으로 합침
-    merged = {}
-    for name, kws in remaining.items():
         target = next((m for m, mk in merged.items() if _overlap_score(_terms(name, kws), _terms(m, mk))), None)
         if target:
-            merged[target] = list(dict.fromkeys(merged[target] + kws))
+            merged[target] = list(dict.fromkeys(merged[target] + list(kws)))
             absorbed.setdefault(target, []).append(name)
         else:
             merged[name] = list(kws)

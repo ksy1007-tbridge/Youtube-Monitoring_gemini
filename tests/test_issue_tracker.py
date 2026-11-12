@@ -9,13 +9,13 @@ from issue_tracker import (merge_auto_into_fixed, check_issue_name, update_histo
 FIXED = {"조희대/사법부": ["조희대", "대법원장"], "김어준 논란": ["김어준"], "부동산·증시": ["부동산", "코스피"]}
 
 
-def test_auto_merges_into_fixed_by_keyword_overlap():
+def test_auto_not_absorbed_into_removed_fixed_list():
     auto = {"조희대 탄핵 (자동)": ["조희대 탄핵", "탄핵집회"], "오세훈 무죄 (자동)": ["오세훈", "2심 무죄"]}
     remaining, absorbed = merge_auto_into_fixed(auto, FIXED)
-    assert "조희대 탄핵 (자동)" not in remaining
-    assert absorbed == {"조희대/사법부": ["조희대 탄핵 (자동)"]}
-    assert remaining == {"오세훈 무죄 (자동)": ["오세훈", "2심 무죄"]}
-    assert FIXED["조희대/사법부"] == ["조희대", "대법원장"]  # 고정 키워드는 늘리지 않음
+    # 고정 칸 흡수 분기 제거 — 고정 목록 인자는 무시
+    assert "조희대 탄핵 (자동)" in remaining
+    assert "오세훈 무죄 (자동)" in remaining
+    assert absorbed == {}
 
 
 def test_auto_auto_overlap_merged():

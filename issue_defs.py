@@ -129,13 +129,14 @@ def parse_news_items(xml_text: str, limit: int = NEWS_CANDIDATES):
 
 
 def _pick_news(items, kws):
-    """핵심어가 제목·리드에 가장 많이 든 후보(동점은 최신).
-    핵심어가 있는데 제목·리드 매칭 0이면 None(엉뚱한 기사보다 생략). 핵심어 자체가 없을 때만 최신 1건."""
+    """핵심어가 기사 제목에 있는 후보만 채택(리드에 프로그램명만 있는 기사는 거절). 동점은 최신."""
     if not items:
         return None
     if kws:
-        best = max(items, key=lambda x: (_kw_score(x, kws), x["ts"]))
-        return best if _kw_score(best, kws) > 0 else None
+        titled = [x for x in items if any(k in (x.get("title") or "") for k in kws)]
+        if not titled:
+            return None
+        return max(titled, key=lambda x: (_kw_score(x, kws), x["ts"]))
     return items[0]
 
 
@@ -308,14 +309,10 @@ def fetch_news(issue_name: str, timeout: int = 8):
         print(f"⚠️ [issue_defs] 네이버 뉴스 조회 실패: {_redact(e)}")
     try:
         items = _fetch_google_items(q, timeout)
-        if not items:
-            return None
-        ranked = sorted(items, key=lambda x: (_kw_score(x, kws), x["ts"]), reverse=True)
-        top = ranked[0]
-        if kws and _kw_score(top, kws) > 0:
-            return _as_news(_enrich(top))
-        enriched = [_enrich(x) for x in ranked[:3]]
-        return _as_news(_pick_news(enriched, kws))
+        picked = _pick_news(items, kws) if items else None
+        if picked:
+            return _as_news(_enrich(picked))
+        return None
     except Exception as e:
         print(f"⚠️ [issue_defs] 보도 조회 실패: {_redact(e)}")
         return None
@@ -422,7 +419,8 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
         line = _HASHTAG_RE.sub("", _URL_RE.sub("", line)).strip(_BULLET_STRIP)
         if _is_junk_line(line):
             continue
-        sent = re.split(r"(?<=[.!?。])\s|(?<=다\.)", line)[0].strip()
+        # .. / … 말줄임은 문장 끝으로 보지 않는다 (따라.. 지금은 → 자르지 않음)
+        sent = re.split(r"(?<!\.)(?<=[.!?。])(?!\.)\s|(?<=다\.)(?!\.)", line)[0].strip()
         if _is_junk_line(sent):
             continue
         if len(sent) > max_len:
@@ -500,18 +498,39 @@ def _is_weak_one_liner(line, issue_name=None, aliases=None) -> bool:
     has_sub = any(w in s for w in _SUBSTANCE_WORDS) or any(q in s for q in ("“", '"', "‘"))
     if len(body.replace(" ", "")) < 15 and not has_sub:
         return True
-    # 관련성 하한: 이슈 핵심어(키워드 포함)도 실체어도 없으면 거부
+    # 관련성 하한: 이슈 핵심어(이름 토막·키워드·사전 별칭)가 최소 1개. 실체어(공소 등)만으로는 통과 금지
     core_words = _issue_core_words(issue_name, aliases)
-    # (핵심어를 만들 수 없는 이슈명이면 판단 근거가 없어 건너뜀)
-    if core_words and not any(w in s for w in core_words) and not any(w in s for w in _SUBSTANCE_WORDS):
+    if core_words and not any(w in s for w in core_words):
         return True
     return False
 
 
+def _is_title_copy(line, title) -> bool:
+    """설명란 한 줄이 제목과 같거나 제목의 잘린 형태이면 True (정의로 쓰지 않음)."""
+    if not line or not title:
+        return False
+
+    def _norm(s):
+        s = re.sub(r"\s+", "", str(s or ""))
+        s = re.sub(r"[\[\]【】()（）]", "", s)
+        return s.rstrip("…. .")
+
+    a, b = _norm(line), _norm(title)
+    if len(a) < 10 or len(b) < 10:
+        return False
+    if a == b or b.startswith(a) or a.startswith(b):
+        return True
+    a2 = a.rstrip("…")
+    return bool(a2) and b.startswith(a2)
+
+
 def _is_omnibus_for(title: str, issue_name: str = None) -> bool:
-    """'A | B | C' 식 여러 주제 묶음 LIVE이고 이슈 핵심어가 그중 한 토막에만 있으면 True."""
+    """'| / ㅣ' 묶음 LIVE 또는 '1. … 2. …' 번호 LIVE에서 이슈 핵심어가 한 토막에만 있으면 True."""
     t = str(title or "")
     parts = [p.strip() for p in re.split(r"[|ㅣ]", t) if p.strip()]
+    numbered = [p.strip() for p in re.split(r"(?:^|\s)\d+\s*[.．]\s*", t) if p.strip()]
+    if len(numbered) >= 3 and len(numbered) > len(parts):
+        parts = numbered
     if len(parts) < 3:
         return False
     base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()
@@ -563,10 +582,16 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
             continue
         for kind, getter in (("description", describe), ("caption", caption)):
             raw = getter(v)
+            if kind == "description" and _is_title_copy(raw, v.get("제목")):
+                print(f"ℹ️ [issue_defs] '{issue_name}' 설명란이 제목 복붙이라 건너뜀")
+                continue
             try:
                 line = summarize(raw, issue_name=issue_name)
             except TypeError:
                 line = summarize(raw)
+            if line and _is_title_copy(line, v.get("제목")):
+                print(f"ℹ️ [issue_defs] '{issue_name}' 설명란 한 줄이 제목 복붙이라 거부")
+                line = None
             if line and _is_weak_one_liner(line, issue_name, aliases):
                 print(f"ℹ️ [issue_defs] '{issue_name}' {kind} 약한 한 줄 거부: {line[:40]}")
                 line = None
@@ -574,6 +599,11 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
                 return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
                               "evidence_url": v.get("링크") or "", "evidence_kind": kind}
     n = news(issue_name)
+    if n:
+        core_words = _issue_core_words(issue_name, aliases)
+        if core_words and not any(w in str(n.get("title") or "") for w in core_words):
+            print(f"ℹ️ [issue_defs] '{issue_name}' 보도 제목에 핵심어 없음 → 거절")
+            n = None
     if n:
         try:
             line = summarize(n.get("text") or n.get("title"), issue_name=issue_name)
@@ -595,7 +625,7 @@ def _build_one(issue_name, videos, summarize, describe, caption, news, max_video
             line = None
         if line:
             return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
-                          "evidence_url": v.get("링크") or "", "evidence_kind": "description"}
+                          "evidence_url": v.get("링크") or "", "evidence_kind": "title"}
     return None, None
 
 

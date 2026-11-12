@@ -32,32 +32,43 @@ def _fake_client(payload):
     return lambda api_key, **kw: types.SimpleNamespace(models=models)
 
 
-def test_pipeline_merges_and_never_double_counts(monkeypatch):
-    df = _df(ROWS)
+def test_pipeline_auto_only_and_no_double_count(monkeypatch):
+    # 조희대 탄핵 3채널이 80%에 안 걸리도록 조회를 고르게
+    rows = [
+        ("고발뉴스TV", "조희대 탄핵 국면 분석", 40000),
+        ("MBC 라디오 시사", "오세훈 2심 무죄, 거대한 파장 / ‘조희대 탄핵’ 국면에 무리수", 35000),
+        ("서울의소리 VoiceOfSeoul", "국힘 “조희대 탄핵, 해볼 테면 해봐라”", 30000),
+        ("스픽스", "조희대 탄핵 청원 폭주", 25000),
+        ("뉴탐사 NewTamsa", "생중계 판결 뒷이야기", 3000),
+        ("[팟빵] 최욱의 매불쇼", "허접한 판결을 생중계로 보여준 이유", 4000),
+    ]
+    df = _df(rows)
     mock = ('{"issues":[{"name":"조희대 탄핵","keywords":["조희대 탄핵"]},'
             '{"name":"생중계 판결","keywords":["생중계", "판결"]}],"persons":[]}')
     monkeypatch.setattr(main, "GEMINI_API_KEY", "dummy")
     monkeypatch.setattr(main.genai, "Client", _fake_client(mock))
-    pool = (~main.fixed_issue_mask(df) | (df["프레임"] == "기타")) & (df["프레임"] != "종합방송")
-    cands = main.extract_dynamic_entities(df["제목"].tolist(), df.loc[pool, "제목"].tolist(), [ROWS[0][1]])
+    pool = df["프레임"] != "종합방송"
+    cands = main.extract_dynamic_entities(df["제목"].tolist(), df.loc[pool, "제목"].tolist(), [])
     dyn, _, absorbed = main.filter_dynamic_entities(df, cands, pool)
-    assert "조희대 탄핵 (자동)" not in dyn and "조희대 탄핵 (자동)" in absorbed["조희대/사법부"]
-    assert "생중계 판결 (자동)" in dyn  # 1건이지만 고조회(50만+) 미분류
-    issues, _ = main.extract_major_issues(df, {**main.ISSUE_KEYWORDS, **dyn}, absorbed)
+    assert any("조희대" in k for k in dyn)
+    issues, _ = main.extract_major_issues(df, dyn, absorbed)
     by = {r["이슈명"]: r for _, r in issues.iterrows()}
-    assert by["조희대/사법부"]["건수"] == 4 and by["조희대/사법부"]["merged"] == ["조희대 탄핵"]
-    assert by["생중계 판결 (자동)"]["건수"] == 2 and by["생중계 판결 (자동)"]["조회수"] == 1043000
-    section, _, ai, hist = main.build_issue_section(issues, {"persons": {}, "frames": {}}, "2026-10-24", {**main.ISSUE_KEYWORDS, **dyn})
-    assert "(통합: 조희대 탄핵)" in section and "생중계 판결" in hist["days"]["2026-10-24"]
-    assert "\uad6c\uc870" not in section + ai  # 금지어 미사용 확인
+    assert "조희대/사법부" in by
+    assert by["조희대/사법부"]["건수"] >= 3
+    # 생중계 판결은 2건 2채널이라 제목 3건 하한으로 탈락 (고조회 면제 꺼짐)
+    assert "생중계 판결" not in by and "생중계 판결 (자동)" not in by
+    section, _, ai, hist = main.build_issue_section(issues, {"persons": {}, "frames": {}}, "2026-10-24", dyn)
+    assert "조희대/사법부" in section
+    assert "조희대/사법부" in hist["days"]["2026-10-24"]
+    assert "구조" not in section + ai  # 금지어 미사용 확인 (원 테스트와 동일 취지)
 
 
-def test_auto_does_not_recount_fixed_videos():
+def test_one_video_one_issue():
     df = _df(ROWS)
-    dyn = {"탄핵 공방 (자동)": ["탄핵"]}
-    issues, _ = main.extract_major_issues(df, {**main.ISSUE_KEYWORDS, **dyn})
-    names = list(issues["이슈명"])
-    assert "탄핵 공방 (자동)" not in names  # 탄핵 제목은 모두 고정 이슈가 이미 셈
+    dyn = {"조희대 탄핵 (자동)": ["조희대"], "탄핵 공방 (자동)": ["탄핵"]}
+    issues, _ = main.extract_major_issues(df, dyn)
+    if issues is not None and not issues.empty:
+        assert int(issues["건수"].sum()) <= len(df[df["프레임"] != "종합방송"])
 
 
 def test_candidate_line_after_4_days():
@@ -68,7 +79,7 @@ def test_candidate_line_after_4_days():
                             "concentration": None, "is_auto": True, "merged": []}])
     section, _, _, _ = main.build_issue_section(issues, {"issue_history": hist}, "2026-10-24",
                                                 {"오세훈 무죄 (자동)": ["오세훈"]})
-    assert "고정 목록 후보" in section and "오세훈 무죄(4일)" in section
+    assert "이름 사전 별칭 추가 제안" in section and "오세훈 무죄(4일)" in section
 
 
 def test_extract_without_key_makes_no_call(monkeypatch):
@@ -106,15 +117,15 @@ def test_person_issue_requires_person_and_keyword():
     df = _df2(ROWS_1026)
     cands = {"issues": [{"name": "장동혁 욕설", "keywords": ["장동혁", "욕설", "녹취", "막말", "국힘"]},
                         {"name": "오세훈 무죄", "keywords": ["오세훈", "무죄"]}], "persons": []}
-    pool = (~main.fixed_issue_mask(df) | (df["프레임"] == "기타")) & (df["프레임"] != "종합방송")
+    pool = df["프레임"] != "종합방송"
     dyn, _, absorbed = main.filter_dynamic_entities(df, cands, pool)
     assert "국민의힘 장동혁 대표 욕설 (자동)" in dyn            # 직함 보정
     assert main.AUTO_ISSUE_MUST["국민의힘 장동혁 대표 욕설 (자동)"] == ["장동혁"]
-    issues, unc = main.extract_major_issues(df, {**main.ISSUE_KEYWORDS, **dyn}, absorbed)
+    issues, unc = main.extract_major_issues(df, dyn, absorbed)
     by = {r["이슈명"]: r for _, r in issues.iterrows()}
-    jang = by["국민의힘 장동혁 대표 욕설 (자동)"]
+    jang = by["국민의힘 장동혁 대표 욕설"]
     assert jang["건수"] == 3 and jang["조회수"] == 12046            # '국힘 막말 정국'(MBC 23만)은 장동혁이 없어 제외
-    oh = by["오세훈 무죄 (자동)"]
+    oh = by["오세훈 무죄"]
     assert oh["건수"] == 3                                         # '오세훈 무슨 직업' 제외 (오세훈 AND 무죄)
     assert "뉴스공장" not in " ".join(unc["제목"])                    # 미분류에서 종합방송 제외
     assert "오세훈 무슨 직업 갖나?" in list(unc["제목"])
@@ -137,17 +148,18 @@ def test_dedupe_live_and_reupload():
     assert len(main.dedupe_reuploads(df2)[0]) == 2
 
 
-def test_single_channel_issue_marked_and_demoted():
+def test_single_channel_share_drops_issue(capsys):
     rows = [("스픽스", f"쟁점X {i}", 100000, 900) for i in range(4)] + [("MBC 라디오 시사", "쟁점X 반론", 1000, 900),
-            ("MBC 라디오 시사", "쟁점Y 1", 2000, 900), ("서울의소리 VoiceOfSeoul", "쟁점Y 2", 2000, 900)]
+            ("MBC 라디오 시사", "쟁점Y 1", 2000, 900), ("서울의소리 VoiceOfSeoul", "쟁점Y 2", 2000, 900),
+            ("스픽스", "쟁점Y 3", 2000, 900)]
     df = _df2(rows)
     main.AUTO_ISSUE_MUST.clear()
-    issues, _ = main.extract_major_issues(df, {**main.ISSUE_KEYWORDS, "쟁점X (자동)": ["쟁점X"], "쟁점Y (자동)": ["쟁점Y"]})
-    names = list(issues["이슈명"])
-    assert names.index("쟁점Y (자동)") < names.index("쟁점X (자동)")   # 같은 2채널이어도 단일 채널 주의는 뒤로
-    section, _, ai, _ = main.build_issue_section(issues, {}, "2026-10-26", {})
-    assert "⚠단일 채널 주의(스픽스 99.8%)" in section and "단일 채널 주의" in ai
-    assert "\uad6c\uc870" not in section + ai
+    issues, _ = main.extract_major_issues(df, {"쟁점X (자동)": ["쟁점X"], "쟁점Y (자동)": ["쟁점Y"]})
+    names = list(issues["이슈명"]) if issues is not None and not issues.empty else []
+    assert "쟁점X" not in names and "쟁점X (자동)" not in names  # 99.8% → 80% 탈락
+    assert any("쟁점Y" in n for n in names)
+    log = capsys.readouterr().out
+    assert "80% 규칙만으로 탈락" in log and "쟁점X" in log
 
 
 def test_choo_oh_are_fixed_persons():

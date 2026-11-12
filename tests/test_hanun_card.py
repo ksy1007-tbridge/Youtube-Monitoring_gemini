@@ -30,11 +30,12 @@ class HanunCardRules(unittest.TestCase):
         self.assertEqual((bucket2, exc2), ("spread", True))
 
     def test_is_new_issue(self):
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", {}, is_auto=True))
+        # 전일 없음만으로는 신규 속보 예외가 아님. 이슈명에 속보|긴급이 있어야 함.
+        self.assertFalse(is_new_issue("김건희 구속 연장 (자동)", {}, is_auto=True))
         self.assertFalse(is_new_issue("조희대/사법부", {"조희대/사법부": {}}, is_auto=False))
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", {"조희대/사법부": {}}, is_auto=True))
-        # 마이그레이션: 빈 prev → 힌트+자동만
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", None, is_auto=True))
+        self.assertFalse(is_new_issue("한덕수 석방 (자동)", {"조희대/사법부": {}}, is_auto=True))
+        self.assertTrue(is_new_issue("한덕수 석방 속보 (자동)", {"조희대/사법부": {}}, is_auto=True))
+        self.assertTrue(is_new_issue("긴급 체포 (자동)", None, is_auto=True))
         self.assertFalse(is_new_issue("조희대/사법부", None, is_auto=False))
 
     def test_card_places_kim_and_handong(self):
@@ -137,6 +138,38 @@ class HanunCardRules(unittest.TestCase):
         ])
         self.assertIn("김건희 구속 연장", snap)
         self.assertEqual(snap["김건희 구속 연장"]["channels"], 3)
+
+    def test_person_lines_outside_internal_limit(self):
+        issues = [
+            {"이슈명": f"내부이슈{i}", "건수": 5, "채널수": 2, "조회수": 100000 - i,
+             "concentration": {"top_share": 70.0}, "is_auto": True}
+            for i in range(5)
+        ]
+        persons = [
+            {"name": "김어준", "display": "김어준", "views_standalone": 200000,
+             "top_share": 45.0, "n_ch": 4, "pct_change": 10, "trend_short": "+10%"},
+            {"name": "한동훈", "display": "한동훈", "views_standalone": 100000,
+             "top_share": 70.0, "n_ch": 2, "pct_change": 0, "from_issue": True},
+        ]
+        card = build_hanun_card(now_str="2026-11-12 16:00", issue_rows=issues,
+                                prev_issues={f"내부이슈{i}": {} for i in range(5)},
+                                person_rows=persons)
+        internal = card.split("내부·편중")[1].split("무시해도")[0]
+        for i in range(5):
+            self.assertIn(f"내부이슈{i}", internal)
+        self.assertIn("김어준", internal)
+        self.assertIn("한동훈", internal)
+
+    def test_new_without_breaking_stays_internal(self):
+        issues = [{"이슈명": "한덕수 석방 (자동)", "건수": 5, "채널수": 3, "조회수": 186000,
+                   "concentration": {"top_share": 98.8}, "is_auto": True}]
+        card = build_hanun_card(now_str="2026-11-12 16:00", issue_rows=issues,
+                                prev_issues={"김어준 논란": {}}, person_rows=[])
+        self.assertIn("한덕수 석방", card.split("내부·편중")[1])
+        self.assertNotIn("한덕수 석방", card.split("내부·편중")[0])
+        self.assertNotIn("신규 속보 예외", card)
+
+
 
 
 if __name__ == "__main__":
