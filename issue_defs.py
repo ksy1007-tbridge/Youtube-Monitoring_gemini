@@ -5,8 +5,8 @@
 - build_defs(issue_rows, videos, source="yeogwon") -> dict
 - publish_defs(defs) -> None  (Cloudflare KV REST PUT, 실패/미설정이어도 예외 없음)
 근거 순서: 이슈별 조회수 상위 단독 영상 설명란 → 자막 앞부분(~1분, youtube-transcript-api, 키 불필요) → 보도 1건(리드·본문 핵심어 필수).
-  제목·설명란 목차 줄만인 정의는 거부. 라이브/하이라이트이면서 자막이 없으면 그 영상은 건너뛴다.
-  근거가 없으면 정의를 생략한다(제목 폴백 없음).
+  제목·설명란 목차 줄만인 정의는 거부. 라이브/하이라이트이고 자막이 없으면 설명란 번호 목차 제목으로 같은 채널→유튜브에서 ~7일 안 본편을 찾아 자막을 쓴다.
+  본편·보도 본문 근거가 없으면 정의를 생략한다(제목 폴백 없음).
 """
 import os
 import re
@@ -469,6 +469,186 @@ def _is_live_or_highlight(video: dict) -> bool:
     return False
 
 
+CLIP_WINDOW_DAYS = 7
+YT_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+
+
+def _clip_core_words(issue_name, aliases=None):
+    fn = globals().get("_issue_core_words") or globals().get("_core_words")
+    return fn(issue_name, aliases)
+
+
+def _strip_toc_prefix(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(
+        r"^\s*(?:[\[【(]?(?:하이라이트|highlight)[\]】):]?\s*)?"
+        r"(?:\d{1,2}\s*[-–—.)]|[\[(]\d{1,2}[\])])\s+",
+        "",
+        s,
+        flags=re.I,
+    )
+    return s.strip()
+
+
+def toc_chapter_titles(text) -> list:
+    """설명란에서 번호 목차 제목만 뽑는다."""
+    out = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        if _TOC_ITEM_RE.match(s):
+            t = _strip_toc_prefix(s)
+            if t:
+                out.append(t)
+    return out
+
+
+def pick_toc_chapter(text, issue_name, aliases=None):
+    """이슈 핵심어가 들어 있는 목차 제목. 해당 줄이 없으면 None."""
+    titles = toc_chapter_titles(text)
+    cores = [c for c in _clip_core_words(issue_name, aliases) if c]
+    hits = [t for t in titles if any(c in t for c in cores)]
+    return hits[0] if hits else None
+
+
+def _norm_title(s) -> str:
+    return re.sub(r"[\s\.·…\-–—\[\]【】()|ㅣ]+", "", str(s or "").lower())
+
+
+def titles_match_chapter(chapter, title) -> bool:
+    nc, nt = _norm_title(chapter), _norm_title(title)
+    if not nc or not nt or len(nc) < 8:
+        return False
+    return nc in nt or (len(nt) >= 10 and nt in nc)
+
+
+def _parse_dt(raw, default=None):
+    if not raw:
+        return default
+    s = str(raw).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.strptime(s[:10], "%Y-%m-%d")
+        except ValueError:
+            return default
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt
+
+
+def _video_anchor(video, now=None):
+    now = now or datetime.now(KST)
+    v = video or {}
+    for k in ("게시일", "published_at", "publishedAt", "날짜", "date"):
+        dt = _parse_dt(v.get(k), None)
+        if dt:
+            return dt
+    return now
+
+
+def _rfc3339_z(dt) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_search_items(items) -> list:
+    out = []
+    for it in items or []:
+        if not it:
+            continue
+        if it.get("제목") or it.get("링크") or it.get("video_id"):
+            out.append(it)
+            continue
+        sn = it.get("snippet") or {}
+        vid = it.get("id") or ""
+        if isinstance(vid, dict):
+            vid = vid.get("videoId") or ""
+        if not vid:
+            continue
+        out.append({
+            "채널명": sn.get("channelTitle") or "",
+            "채널ID": sn.get("channelId") or "",
+            "제목": sn.get("title") or "",
+            "링크": f"https://www.youtube.com/watch?v={vid}",
+            "설명": sn.get("description") or "",
+            "게시일": sn.get("publishedAt") or "",
+        })
+    return out
+
+
+def _pick_clip(items, chapter_title, exclude_id=None, prefer_channel=None):
+    for it in _normalize_search_items(items):
+        if exclude_id and _video_id(it) == exclude_id:
+            continue
+        if prefer_channel and (it.get("채널명") or "") != prefer_channel:
+            continue
+        if titles_match_chapter(chapter_title, it.get("제목") or ""):
+            return it
+    return None
+
+
+def _youtube_search_clips(chapter_title, video, *, channel_only, published_after, published_before):
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        return []
+    params = {
+        "part": "snippet",
+        "q": chapter_title,
+        "type": "video",
+        "maxResults": 8,
+        "order": "relevance",
+        "key": api_key,
+        "publishedAfter": published_after,
+        "publishedBefore": published_before,
+    }
+    if channel_only:
+        cid = (video or {}).get("채널ID") or (video or {}).get("channel_id")
+        if cid:
+            params["channelId"] = cid
+    try:
+        r = requests.get(YT_SEARCH_URL, params=params, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("items") or []
+        if channel_only and not params.get("channelId"):
+            ch = (video or {}).get("채널명") or ""
+            if ch:
+                items = [it for it in items if (it.get("snippet") or {}).get("channelTitle") == ch]
+        return items
+    except Exception as e:
+        print(f"ℹ️ [issue_defs] 본편 검색 실패: {_redact(e)}")
+        return []
+
+
+def find_source_clip(video, chapter_title, *, now=None, days=CLIP_WINDOW_DAYS, search=None):
+    """라이브/하이라이트 목차 제목으로 같은 채널→유튜브에서 ~days일 창의 본편을 찾는다."""
+    if not chapter_title:
+        return None
+    now = now or datetime.now(KST)
+    anchor = _video_anchor(video, now)
+    after, before = _rfc3339_z(anchor - timedelta(days=days)), _rfc3339_z(anchor + timedelta(days=1))
+    exclude = _video_id(video)
+    channel = (video or {}).get("채널명") or ""
+    search = search or _youtube_search_clips
+    for channel_only in (True, False):
+        try:
+            items = search(chapter_title, video, channel_only=channel_only,
+                           published_after=after, published_before=before)
+        except TypeError:
+            try:
+                items = search(chapter_title, video, channel_only)
+            except TypeError:
+                items = search(chapter_title, video)
+        prefer = channel if channel_only else None
+        hit = _pick_clip(items, chapter_title, exclude_id=exclude, prefer_channel=prefer)
+        if hit:
+            return hit
+    return None
+
+
 def _is_junk_line(line: str) -> bool:
     s = (line or "").strip()
     if s.startswith("※"):
@@ -695,15 +875,32 @@ def _reject_line(line, issue_name, aliases=None, title=None) -> bool:
     return False
 
 
-def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5, aliases=None):
+def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5, aliases=None, search_clip=None):
     picked = _pick_standalone(videos, _issue_core_words(issue_name))[:max_videos]
+    search_clip = search_clip or find_source_clip
     for v in picked:
         # 여러 주제 묶음 LIVE에서 이슈가 한 토막뿐이면 설명·자막은 다른 주제 잡음 → 건너뜀
         if _is_omnibus_for(v.get("제목") or "", issue_name):
             continue
         cap = caption(v)
-        # 라이브/하이라이트는 자막이 있을 때만 근거로 쓴다(설명란 목차 복사 방지)
         if _is_live_or_highlight(v) and not cap:
+            desc = v.get("설명") or describe(v)
+            chapter = pick_toc_chapter(desc, issue_name, aliases)
+            clip = search_clip(v, chapter) if chapter else None
+            if clip:
+                cap2 = caption(clip)
+                if cap2:
+                    try:
+                        line = summarize(cap2, issue_name=issue_name)
+                    except TypeError:
+                        line = summarize(cap2)
+                    if line and _reject_line(line, issue_name, aliases, clip.get("제목")):
+                        print(f"ℹ️ [issue_defs] '{issue_name}' 본편 자막 약한 한 줄 거부: {line[:40]}")
+                        line = None
+                    if line:
+                        return line, {"evidence_channel": clip.get("채널명") or "",
+                                      "evidence_title": clip.get("제목") or "",
+                                      "evidence_url": clip.get("링크") or "", "evidence_kind": "caption"}
             print(f"ℹ️ [issue_defs] '{issue_name}' 라이브/하이라이트·자막 없음 → 영상 생략")
             continue
         pairs = (("caption", cap),) if (_is_live_or_highlight(v) and cap) else (("description", describe(v)), ("caption", cap))

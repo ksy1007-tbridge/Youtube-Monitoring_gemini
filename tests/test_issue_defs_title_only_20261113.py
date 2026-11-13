@@ -95,3 +95,62 @@ def test_yusimin_news_sentence_not_truncated():
 
 def test_fetch_caption_head_without_id_is_none():
     assert m.fetch_caption_head({"제목": "x", "링크": ""}) is None
+
+
+CLIP_TITLE = "김어준 드디어 조밍아웃..합당 촉구 발언 와중에 실언"
+CLIP_ID = "cN7hgD2q9VU"
+HIGHLIGHT_ID = "d5dceZXvCnE"
+CLIP_VIDEO = {
+    "채널명": "고발뉴스TV",
+    "제목": CLIP_TITLE,
+    "링크": f"https://www.youtube.com/watch?v={CLIP_ID}",
+}
+CLIP_CAP = "김어준이 민주당과 조국혁신당 합당을 1월까지 하자고 주장하는 가운데 속내가 드러났다는 지적이 나왔다."
+
+
+def test_pick_toc_chapter_from_highlight_desc():
+    assert m.pick_toc_chapter(LIVE_DESC, "김어준 논란", ["김어준"]) == CLIP_TITLE
+    assert HIGHLIGHT_ID in (LIVE_VIDEO["링크"])
+
+
+def test_source_clip_fallback_d5dceZXvCnE_to_cN7hgD2q9VU():
+    searches = []
+
+    def search_clip(video, chapter_title, **kwargs):
+        searches.append((m._video_id(video), chapter_title))
+        assert m._video_id(video) == HIGHLIGHT_ID
+        assert chapter_title == CLIP_TITLE
+        return CLIP_VIDEO
+
+    def caption(v):
+        if m._video_id(v) == CLIP_ID:
+            return CLIP_CAP
+        return None
+
+    line, ev = m._build_one(
+        "김어준 논란", [LIVE_VIDEO], m.summarize_one_liner,
+        m.fetch_description, caption, lambda n: None,
+        aliases=["김어준"], search_clip=search_clip,
+    )
+    assert searches == [(HIGHLIGHT_ID, CLIP_TITLE)]
+    assert ev["evidence_kind"] == "caption"
+    assert ev["evidence_channel"] == "고발뉴스TV"
+    assert ev["evidence_title"] == CLIP_TITLE
+    assert ev["evidence_url"].endswith(CLIP_ID)
+    assert "합당" in line and "김어준" in line
+    assert not m._is_toc_or_title_line(line)
+
+
+def test_find_source_clip_searches_same_channel_then_youtube():
+    calls = []
+
+    def search(chapter_title, video, *, channel_only, published_after, published_before):
+        calls.append(channel_only)
+        assert chapter_title == CLIP_TITLE
+        if channel_only:
+            return []
+        return [CLIP_VIDEO]
+
+    hit = m.find_source_clip(LIVE_VIDEO, CLIP_TITLE, search=search)
+    assert calls == [True, False]
+    assert m._video_id(hit) == CLIP_ID
