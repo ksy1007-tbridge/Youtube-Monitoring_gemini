@@ -42,9 +42,14 @@ class BuildDefs(unittest.TestCase):
             self.assertEqual(d["issues"], [])
 
     def test_one_liner_len(self):
-        s = summarize_one_liner("가" * 200)
-        self.assertLessEqual(len(s), 60)
+        # 문장 종결이 없는 긴 문자열은 중간 자름 없이 생략
+        self.assertIsNone(summarize_one_liner("가" * 200))
         self.assertIsNone(summarize_one_liner("짧음\n#tag"))
+        # 완전한 문장은 60자를 넘어도 자르지 않는다
+        sent = "김어준 씨와 유시민 작가가 조국당을 '구명정'으로 거론하는 상황을 비판하며, 대통령을 향한 비판이 조롱으로 나아가고 있다고 주장했다."
+        line = summarize_one_liner(sent, issue_name="유시민 논란")
+        self.assertEqual(line, sent)
+        self.assertNotIn("…", line)
 
 
 class Publish(unittest.TestCase):
