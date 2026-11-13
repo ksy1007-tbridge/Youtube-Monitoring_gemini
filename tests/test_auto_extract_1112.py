@@ -107,6 +107,13 @@ class LabelRegression1113(unittest.TestCase):
         )
         self.assertEqual(al.label_issue("최민희 하이에나", ["최민희"]), "최민희 하이에나")
 
+    def test_handeoksu_release_not_labeled_chohee(self):
+        self.assertNotEqual(
+            al.label_issue("한덕수 석방 및 조희대 탄핵", ["석방", "조희대", "탄핵"]),
+            "조희대/사법부",
+        )
+        self.assertEqual(al.label_issue("조희대 탄핵", ["조희대", "탄핵"]), "조희대/사법부")
+
 
 class JunkTokenRegression1113(unittest.TestCase):
     def test_project_and_summit_are_junk(self):

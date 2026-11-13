@@ -111,6 +111,10 @@ def label_issue(name: str, keywords=None, aliases_map=None) -> str:
         if lp:
             if not _needle_in_parts(lp, name_parts):
                 continue
+            name_lp = leading_person(base, persons)
+            # 이슈명의 대표 인물이 다르면 붙이지 않음 (한덕수 석방 및 조희대 탄핵 ⊄ 조희대/사법부)
+            if name_lp and name_lp != lp:
+                continue
             ev_needles = [e for e in events if e]
             if not ev_needles or not any(_needle_in_parts(e, parts) for e in ev_needles):
                 continue
