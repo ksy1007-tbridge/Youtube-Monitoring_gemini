@@ -6,12 +6,10 @@ import html
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# 카드 전용 편중 임계 (리포트 ⚠편중 50%와 별개)
-HANUN_BIAS_PCT = 60.0
-# 소수 채널 예외: 채널 수가 이 값 미만(=1~2채널)이면 점유율과 무관하게 내부·편중.
-# 1~2채널 이슈는 사실상 특정 채널 기획이므로 편중으로 본다. 3채널 이상은
-# 최대 채널 점유율 ≥ HANUN_BIAS_PCT(60%) 규칙만 적용한다.
-# (예: 김어준 논란 9건·3채널·최대 49.2% → 확산. 10/29 카드 오분류 수정)
+# 카드 이슈를 내부·편중으로 보내는 유일한 기준: 최대 채널 조회 점유율 ≥ 80%.
+# 60% 임계와 '2채널이면 내부' 규칙은 쓰지 않는다. 건수 3·채널 2 하한은 채택 단계(issue_auto)에만 있다.
+HANUN_BIAS_PCT = 80.0
+# 인물 줄 보조(한동훈 등). 이슈 분류에는 쓰지 않음.
 HANUN_MIN_CHANNELS_SPREAD = 3
 # 인물 급등/급락 표기 임계(전일 대비 %)
 HANUN_PERSON_SWING_PCT = 50.0
@@ -62,14 +60,10 @@ def classify_issue(
     is_new: bool,
 ) -> Tuple[str, bool]:
     """반환: ('spread'|'internal', used_new_exception).
-    규칙(문서화된 예외 외 없음):
-      1) 최대 채널 점유율 ≥ 60% → 내부·편중
-      2) 채널 수 < 3 (1~2채널) → 내부·편중 (소수 채널 예외)
-      3) 그 외 → 확산
-    신규 속보는 1)·2)를 덮어쓰고 ※표기한다."""
+    이슈를 내부·편중으로 보내는 규칙은 하나뿐이다: 최대 채널 점유율 ≥ 80%.
+    채널 수는 보지 않는다. 신규 속보(속보|긴급)는 이 규칙을 덮어쓰고 ※표기한다."""
     biased = top_share is not None and top_share >= HANUN_BIAS_PCT
-    few_channels = channels < HANUN_MIN_CHANNELS_SPREAD
-    if biased or few_channels:
+    if biased:
         if is_new:
             return "spread", True
         return "internal", False
@@ -173,7 +167,7 @@ def build_one_liner(
 ) -> str:
     """담백한 한 줄. 이슈 문장과 인물 급등 문장을 분리한다.
     - 이슈: 확산 상위 최대 2개 '넓게 깔린다' (조회 견인 표현 쓰지 않음)
-    - 인물: 전일 대비 +50% 이상만 '조회 급등'으로, 최대 채널 ≥60%면 (편중 N%) 표기
+    - 인물: 전일 대비 +50% 이상만 '조회 급등'으로, 최대 채널 ≥80%면 (편중 N%) 표기
       → 편중 급등만 있으면 '특정 채널 몰림'으로 서술해 과장 방지
     - 특정 인물(예: 김어준)을 이슈 이름만으로 '조회를 끌어올린다'고 쓰지 않는다."""
     names = [strip_auto(r["이슈명"]) for r in spread[:2] if r.get("이슈명")]

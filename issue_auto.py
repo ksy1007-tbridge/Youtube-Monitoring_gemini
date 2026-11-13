@@ -132,12 +132,13 @@ def title_share(views_by_channel: dict) -> float:
     return round(max(views_by_channel.values()) / total * 100, 1)
 
 
-def issue_bucket(n_channels: int, top_share=None, *, bias_pct: float = 60.0,
+def issue_bucket(n_channels: int, top_share=None, *, bias_pct: float = None,
                  min_channels_spread: int = 3) -> str:
-    """'spread' 또는 'internal'. 채널 수 < 3이거나 최대 점유율 ≥ bias_pct(조회 없으면 채널만)."""
-    if int(n_channels or 0) < min_channels_spread:
-        return "internal"
-    if top_share is not None and float(top_share) >= bias_pct:
+    """'spread' 또는 'internal'. 내부는 최대 채널 점유율 ≥ 80%일 때만.
+    채널 수(2채널 예외)는 보지 않는다. n_channels·min_channels_spread는 호환을 위해 받을 뿐이다.
+    조회가 없어 점유율을 모르면 확산이다."""
+    threshold = DYNAMIC_MAX_CHANNEL_SHARE if bias_pct is None else bias_pct
+    if top_share is not None and float(top_share) >= threshold:
         return "internal"
     return "spread"
 
