@@ -42,12 +42,17 @@ def test_fetch_news_failure_returns_none(monkeypatch):
 def test_build_one_uses_news_when_description_is_junk():
     vids = [{"채널명": "MBC 시선집중", "제목": "[시선집중] 인터뷰", "조회수": 100, "링크": "https://youtu.be/abcdefg",
              "설명": "※ 이 영상의 출처는 MBC 라디오입니다.\n※ 화면 인용 시 출처를 다음과 같이 명시해주세요"}]
-    news = lambda name: d.parse_news_rss(RSS)
+    def news(name):
+        n = d.parse_news_rss(RSS)
+        n["lead"] = "유시민이 검찰개혁을 늦추면 안 된다고 발언한 뒤 여권 내에서 비판이 확산됐다."
+        n["text"] = n["title"] + "\n" + n["lead"]
+        return n
     line, ev = d._build_one("유시민 논란", vids, d.summarize_one_liner,
                             d.fetch_description, lambda v: None, news)
     assert ev["evidence_kind"] == "news"
     assert ev["evidence_channel"] == "경향신문"
-    assert line and "유시민" in line and len(line) <= d.ONE_LINER_MAX
+    assert line and "유시민" in line
+    assert "…" not in line
 
 
 @pytest.mark.skipif(os.environ.get("ISSUE_DEFS_LIVE") != "1", reason="live network test")

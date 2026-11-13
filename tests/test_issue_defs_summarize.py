@@ -29,7 +29,7 @@ def test_title_fallback_clickbait():
     assert "실화임?" not in line  # strip trailing ?
 
 
-def test_build_one_falls_to_title_when_desc_junk():
+def test_build_one_no_title_fallback_when_desc_junk():
     videos = [{
         "채널명": "고발뉴스TV",
         "제목": "제사장의 몰락..김어준 실화임?",
@@ -45,9 +45,7 @@ def test_build_one_falls_to_title_when_desc_junk():
         caption=lambda v: None,
         news=lambda n: None,
     )
-    assert line
-    assert "김어준" in line
-    assert meta["evidence_kind"] == "description"
+    assert line is None and meta is None
 
 
 MBC_DESC = """※ 〈김종배의 시선집중〉 방송 화면 인용 시, 출처를 잘 보이는 크기의 자막으로 다음과 같이 명시해주세요.
@@ -65,16 +63,13 @@ def test_summarize_mbc_attribution_only_is_none():
     assert m.summarize_one_liner(MBC_DESC, issue_name="유시민 논란") is None
 
 
-def test_build_one_mbc_falls_to_title():
+def test_build_one_mbc_no_title_fallback():
     videos = [{"채널명": "MBC 라디오 시사", "제목": MBC_TITLE,
                "링크": "https://youtu.be/u4G42iyKF2Y", "조회수": 50000, "프레임": "기타"}]
     line, meta = m._build_one(
         "유시민 논란", videos, m.summarize_one_liner,
         lambda v: MBC_DESC, lambda v: None, lambda q: None)
-    assert line
-    assert "출처" not in line and "자막" not in line
-    assert "유시민" in line
-    assert "파브르" in line or "합당론" in line
+    assert line is None and meta is None
 
 
 def test_skip_misc_junk_lines():
@@ -145,4 +140,6 @@ def test_news_picker_rejects_unrelated():
               "lead": "기재부는 총지출을 늘리기로 했다", "ts": 2}]
     assert _d._pick_news(items, ["김어준"]) is None
     items.append({"channel": "b", "title": "김어준 발언 논란", "url": "u2", "lead": "", "ts": 1})
+    assert _d._pick_news(items, ["김어준"]) is None  # 제목만 매칭은 거부
+    items[-1]["lead"] = "김어준의 방송 발언을 둘러싼 공방이 이어졌다"
     assert _d._pick_news(items, ["김어준"])["url"] == "u2"
