@@ -190,5 +190,27 @@ class HanunCardRules(unittest.TestCase):
         self.assertNotIn("트럼프", card.split("확산")[1].split("내부·편중")[0])
 
 
+
+    def test_omnibus_only_tracked_person_has_no_line(self):
+        issues = [{"이슈명": "조희대/사법부", "건수": 5, "채널수": 4, "조회수": 200000,
+                   "concentration": {"top_share": 40.0}, "is_auto": False}]
+        persons = [
+            {"name": "한민수", "display": "한민수", "views_standalone": 0,
+             "top_share": None, "n_ch": 0, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 0, "cnt": 2},
+            {"name": "이성윤", "display": "이성윤", "views_standalone": 0,
+             "top_share": None, "n_ch": 0, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 0, "cnt": 1},
+            {"name": "트럼프", "display": "트럼프", "views_standalone": 140000,
+             "top_share": 96.0, "n_ch": 3, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 2},
+        ]
+        card = build_hanun_card(now_str="2026-11-13 17:00", issue_rows=issues,
+                                prev_issues={"조희대/사법부": {}}, person_rows=persons)
+        self.assertNotIn("한민수", card)
+        self.assertNotIn("이성윤", card)
+        self.assertIn("트럼프", card.split("<b>인물</b>")[1])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -94,6 +94,15 @@ def _issue_line(row: dict, *, new_exc: bool) -> str:
     return f"• <b>{name}</b> — {cnt}건·{ch}채널·{_fmt_views(views)}{share_s}{exc}"
 
 
+def has_solo_videos(p: dict) -> bool:
+    """단독(종합방송 제외) 영상이 1건 이상이면 True. 단독 0건은 인물 줄을 만들지 않는다."""
+    if p is None:
+        return False
+    if "solo_cnt" in p:
+        return int(p.get("solo_cnt") or 0) > 0
+    return int(p.get("views_standalone") or 0) > 0 or int(p.get("n_ch") or 0) > 0
+
+
 def _person_internal_line(p: dict) -> str:
     disp = html.escape(str(p.get("display") or p.get("name") or ""))
     views = int(p.get("views_standalone") or 0)
@@ -244,6 +253,8 @@ def build_hanun_card(
     person_internal = []
     handong_seen = False
     for p in person_rows:
+        if not has_solo_videos(p):
+            continue
         key = strip_auto(p.get("name") or "")
         disp = p.get("display") or key
         pct = p.get("pct_change")  # float or None
@@ -287,7 +298,7 @@ def build_hanun_card(
     # 체크리스트: 한동훈이 이슈/인물에 있으면 반드시 한 줄
     if not handong_seen:
         for p in person_rows:
-            if "한동훈" in strip_auto(p.get("name") or ""):
+            if "한동훈" in strip_auto(p.get("name") or "") and has_solo_videos(p):
                 person_internal.append({**p, "display": p.get("display") or "한동훈", "note": "", "kind": "person"})
                 handong_seen = True
                 break

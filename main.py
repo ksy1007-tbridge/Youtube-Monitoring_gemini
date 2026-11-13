@@ -1314,18 +1314,22 @@ def run_monitoring():
                 _pv = int(prev_rec.get("views_standalone") or 0)
                 if _pv >= MIN_PREV_VIEWS_FOR_PCT:
                     _pct = round(((p_views_standalone - _pv) / _pv) * 100, 1)
-            hanun_person_rows.append({
-                "name": p,
-                "display": disp,
-                "cnt": p_cnt,
-                "views_standalone": p_views_standalone,
-                "top_share": (conc or {}).get("top_share") if conc else None,
-                "n_ch": (conc or {}).get("n_ch") if conc else sel_standalone["채널명"].nunique() if len(sel_standalone) else 0,
-                "pct_change": _pct,
-                "trend_short": (f"{_pct:+.0f}%" if _pct is not None else ("신작" if is_new_clip else "")),
-                "from_issue": False,
-                "tracked": p in TRACK_PERSONS,
-            })
+            solo_cnt = int(len(sel_standalone))
+            # 단독 0건(종합방송만)은 한눈 인물 줄을 만들지 않음 (한민수·이성윤 등)
+            if solo_cnt > 0:
+                hanun_person_rows.append({
+                    "name": p,
+                    "display": disp,
+                    "cnt": p_cnt,
+                    "solo_cnt": solo_cnt,
+                    "views_standalone": p_views_standalone,
+                    "top_share": (conc or {}).get("top_share") if conc else None,
+                    "n_ch": (conc or {}).get("n_ch") if conc else sel_standalone["채널명"].nunique(),
+                    "pct_change": _pct,
+                    "trend_short": (f"{_pct:+.0f}%" if _pct is not None else ("신작" if is_new_clip else "")),
+                    "from_issue": False,
+                    "tracked": p in TRACK_PERSONS,
+                })
 
     # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
     person_summary_lines.sort(key=lambda x: (x[2], x[3], x[4]), reverse=True)
