@@ -709,7 +709,8 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
         line = _HASHTAG_RE.sub("", _URL_RE.sub("", line)).strip(_BULLET_STRIP)
         if _is_junk_line(line):
             continue
-        sent = re.split(r"(?<=[.!?。])\s|(?<=다\.)", line)[0].strip()
+        # .. / … 말줄임은 문장 끝으로 보지 않는다 (따라.. 지금은 → 자르지 않음)
+        sent = re.split(r"(?<!\.)(?<=[.!?。])(?!\.)\s|(?<=다\.)(?!\.)", line)[0].strip()
         if _is_junk_line(sent):
             continue
         sent = _finish_sentence(sent, max_len)
@@ -790,18 +791,39 @@ def _is_weak_one_liner(line, issue_name=None, aliases=None) -> bool:
     has_sub = any(w in s for w in _SUBSTANCE_WORDS) or any(q in s for q in ("“", '"', "‘"))
     if len(body.replace(" ", "")) < 15 and not has_sub:
         return True
-    # 관련성 하한: 이슈 핵심어(키워드 포함)도 실체어도 없으면 거부
+    # 관련성 하한: 이슈 핵심어(이름 토막·키워드·사전 별칭)가 최소 1개. 실체어(공소 등)만으로는 통과 금지
     core_words = _issue_core_words(issue_name, aliases)
-    # (핵심어를 만들 수 없는 이슈명이면 판단 근거가 없어 건너뜀)
-    if core_words and not any(w in s for w in core_words) and not any(w in s for w in _SUBSTANCE_WORDS):
+    if core_words and not any(w in s for w in core_words):
         return True
     return False
 
 
+def _is_title_copy(line, title) -> bool:
+    """설명란 한 줄이 제목과 같거나 제목의 잘린 형태이면 True (정의로 쓰지 않음)."""
+    if not line or not title:
+        return False
+
+    def _norm(s):
+        s = re.sub(r"\s+", "", str(s or ""))
+        s = re.sub(r"[\[\]【】()（）]", "", s)
+        return s.rstrip("…. .")
+
+    a, b = _norm(line), _norm(title)
+    if len(a) < 10 or len(b) < 10:
+        return False
+    if a == b or b.startswith(a) or a.startswith(b):
+        return True
+    a2 = a.rstrip("…")
+    return bool(a2) and b.startswith(a2)
+
+
 def _is_omnibus_for(title: str, issue_name: str = None) -> bool:
-    """'A | B | C' 식 여러 주제 묶음 LIVE이고 이슈 핵심어가 그중 한 토막에만 있으면 True."""
+    """'| / ㅣ' 묶음 LIVE 또는 '1. … 2. …' 번호 LIVE에서 이슈 핵심어가 한 토막에만 있으면 True."""
     t = str(title or "")
     parts = [p.strip() for p in re.split(r"[|ㅣ]", t) if p.strip()]
+    numbered = [p.strip() for p in re.split(r"(?:^|\s)\d+\s*[.．]\s*", t) if p.strip()]
+    if len(numbered) >= 3 and len(numbered) > len(parts):
+        parts = numbered
     if len(parts) < 3:
         return False
     base = re.sub(r"\s*(논란|이슈|사건)$", "", strip_auto(issue_name or "")).strip()

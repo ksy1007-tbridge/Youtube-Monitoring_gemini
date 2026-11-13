@@ -9,32 +9,40 @@ from hanun_card import (
 
 
 class HanunCardRules(unittest.TestCase):
-    def test_bias_threshold_60(self):
-        self.assertEqual(HANUN_BIAS_PCT, 60.0)
+    def test_bias_threshold_80_only(self):
+        self.assertEqual(HANUN_BIAS_PCT, 80.0)
         # 38% + 8채널 → 확산
         self.assertEqual(classify_issue(channels=8, top_share=38.2, is_new=False), ("spread", False))
-        # 70% → 내부
-        self.assertEqual(classify_issue(channels=3, top_share=69.7, is_new=False), ("internal", False))
-        # 56.6% + 3채널 → 확산 (60% 미만, 3채널은 소수 채널 예외 아님)
-        self.assertEqual(classify_issue(channels=3, top_share=56.6, is_new=False), ("spread", False))
-        # 2채널 → 내부 (소수 채널 예외)
-        self.assertEqual(classify_issue(channels=2, top_share=50.0, is_new=False), ("internal", False))
+        # 70%·79.4%는 80% 미만이라 채널 수와 무관하게 확산
+        self.assertEqual(classify_issue(channels=3, top_share=69.7, is_new=False), ("spread", False))
+        self.assertEqual(classify_issue(channels=4, top_share=79.4, is_new=False), ("spread", False))
+        # 2채널·50%도 확산 (2채널 예외 제거)
+        self.assertEqual(classify_issue(channels=2, top_share=50.0, is_new=False), ("spread", False))
+        # 2채널이어도 80% 이상이면 내부
+        self.assertEqual(classify_issue(channels=2, top_share=80.0, is_new=False), ("internal", False))
+        self.assertEqual(classify_issue(channels=3, top_share=81.6, is_new=False), ("internal", False))
         # 10/29 김어준 논란: 9건·3채널·최대 49.2% → 확산
         self.assertEqual(classify_issue(channels=3, top_share=49.2, is_new=False), ("spread", False))
+        # 조회 점유를 모르면 확산
+        self.assertEqual(classify_issue(channels=2, top_share=None, is_new=False), ("spread", False))
 
     def test_new_exception_overrides(self):
+        # 80% 미만은 원래 확산이라 신규 속보 예외를 쓰지 않음
         bucket, exc = classify_issue(channels=2, top_share=56.6, is_new=True)
-        self.assertEqual(bucket, "spread")
-        self.assertTrue(exc)
-        bucket2, exc2 = classify_issue(channels=3, top_share=70.0, is_new=True)
+        self.assertEqual((bucket, exc), ("spread", False))
+        bucket70, exc70 = classify_issue(channels=3, top_share=70.0, is_new=True)
+        self.assertEqual((bucket70, exc70), ("spread", False))
+        # 80% 이상 + 신규 속보 → 확산(※)
+        bucket2, exc2 = classify_issue(channels=3, top_share=85.0, is_new=True)
         self.assertEqual((bucket2, exc2), ("spread", True))
 
     def test_is_new_issue(self):
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", {}, is_auto=True))
+        # 전일 없음만으로는 신규 속보 예외가 아님. 이슈명에 속보|긴급이 있어야 함.
+        self.assertFalse(is_new_issue("김건희 구속 연장 (자동)", {}, is_auto=True))
         self.assertFalse(is_new_issue("조희대/사법부", {"조희대/사법부": {}}, is_auto=False))
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", {"조희대/사법부": {}}, is_auto=True))
-        # 마이그레이션: 빈 prev → 힌트+자동만
-        self.assertTrue(is_new_issue("김건희 구속 연장 (자동)", None, is_auto=True))
+        self.assertFalse(is_new_issue("한덕수 석방 (자동)", {"조희대/사법부": {}}, is_auto=True))
+        self.assertTrue(is_new_issue("한덕수 석방 속보 (자동)", {"조희대/사법부": {}}, is_auto=True))
+        self.assertTrue(is_new_issue("긴급 체포 (자동)", None, is_auto=True))
         self.assertFalse(is_new_issue("조희대/사법부", None, is_auto=False))
 
     def test_card_places_kim_and_handong(self):
@@ -65,16 +73,18 @@ class HanunCardRules(unittest.TestCase):
             df_top_rows=[{"프레임": "종합방송", "조회수": 1183015, "채널명": "뉴스공장", "제목": "풀버전"}],
             unclassified_rows=[{"조회수": 490588, "제목": "프랑스 사태 한편으로 완벽 이해! [코너별 다시보기]"}],
         )
-        # 김건희 = 3채널·56.6% → 규칙상 확산 (예외 불필요)
+        # 80% 미만 이슈는 채널 수와 무관하게 확산 (한동훈 69.7%, 유시민 74.5% 포함)
         spread_part = card.split("내부·편중")[0]
         self.assertIn("김건희 구속 연장", spread_part)
         self.assertNotIn("신규 속보 예외", spread_part)
         self.assertIn("조희대", spread_part)
-        # 한동훈·유시민은 내부
+        self.assertIn("한동훈 딸 수사 의혹", spread_part)
+        self.assertIn("유시민 논란", spread_part)
+        # 인물 줄(한동훈·주진우)은 내부 칸의 인물 섹션
         internal_part = card.split("내부·편중")[1]
         self.assertIn("한동훈", internal_part)
-        self.assertIn("유시민", internal_part)
         self.assertIn("주진우", internal_part)
+        self.assertNotIn("유시민 논란", internal_part)
         self.assertIn("종합방송", card)
         self.assertIn("원문 리포트가 이어집니다", card)
 
@@ -137,6 +147,78 @@ class HanunCardRules(unittest.TestCase):
         ])
         self.assertIn("김건희 구속 연장", snap)
         self.assertEqual(snap["김건희 구속 연장"]["channels"], 3)
+
+    def test_person_lines_outside_internal_limit(self):
+        issues = [
+            {"이슈명": f"내부이슈{i}", "건수": 5, "채널수": 2, "조회수": 100000 - i,
+             "concentration": {"top_share": 85.0}, "is_auto": True}
+            for i in range(5)
+        ]
+        persons = [
+            {"name": "김어준", "display": "김어준", "views_standalone": 200000,
+             "top_share": 45.0, "n_ch": 4, "pct_change": 10, "trend_short": "+10%"},
+            {"name": "한동훈", "display": "한동훈", "views_standalone": 100000,
+             "top_share": 70.0, "n_ch": 2, "pct_change": 0, "from_issue": True},
+        ]
+        card = build_hanun_card(now_str="2026-11-12 16:00", issue_rows=issues,
+                                prev_issues={f"내부이슈{i}": {} for i in range(5)},
+                                person_rows=persons)
+        internal = card.split("내부·편중")[1].split("무시해도")[0]
+        for i in range(5):
+            self.assertIn(f"내부이슈{i}", internal)
+        self.assertIn("김어준", internal)
+        self.assertIn("한동훈", internal)
+
+    def test_new_without_breaking_stays_internal(self):
+        issues = [{"이슈명": "한덕수 석방 (자동)", "건수": 5, "채널수": 3, "조회수": 186000,
+                   "concentration": {"top_share": 98.8}, "is_auto": True}]
+        card = build_hanun_card(now_str="2026-11-12 16:00", issue_rows=issues,
+                                prev_issues={"김어준 논란": {}}, person_rows=[])
+        self.assertIn("한덕수 석방", card.split("내부·편중")[1])
+        self.assertNotIn("한덕수 석방", card.split("내부·편중")[0])
+        self.assertNotIn("신규 속보 예외", card)
+
+
+
+
+
+    def test_tracked_person_appears_without_cluster_or_swing(self):
+        issues = [{"이슈명": "조희대/사법부", "건수": 5, "채널수": 4, "조회수": 200000,
+                   "concentration": {"top_share": 40.0}, "is_auto": False}]
+        persons = [
+            {"name": "트럼프", "display": "트럼프", "views_standalone": 12000,
+             "top_share": 40.0, "n_ch": 3, "pct_change": 5, "trend_short": "+5%", "tracked": True},
+            {"name": "최민희", "display": "최민희", "views_standalone": 8000,
+             "top_share": 30.0, "n_ch": 2, "pct_change": 0, "trend_short": "", "tracked": True},
+        ]
+        card = build_hanun_card(now_str="2026-11-13 16:00", issue_rows=issues,
+                                prev_issues={"조희대/사법부": {}}, person_rows=persons)
+        person_part = card.split("<b>인물</b>")[1] if "<b>인물</b>" in card else ""
+        self.assertIn("트럼프", person_part)
+        self.assertIn("최민희", person_part)
+        self.assertNotIn("트럼프", card.split("확산")[1].split("내부·편중")[0])
+
+
+
+    def test_omnibus_only_tracked_person_has_no_line(self):
+        issues = [{"이슈명": "조희대/사법부", "건수": 5, "채널수": 4, "조회수": 200000,
+                   "concentration": {"top_share": 40.0}, "is_auto": False}]
+        persons = [
+            {"name": "한민수", "display": "한민수", "views_standalone": 0,
+             "top_share": None, "n_ch": 0, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 0, "cnt": 2},
+            {"name": "이성윤", "display": "이성윤", "views_standalone": 0,
+             "top_share": None, "n_ch": 0, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 0, "cnt": 1},
+            {"name": "트럼프", "display": "트럼프", "views_standalone": 140000,
+             "top_share": 96.0, "n_ch": 3, "pct_change": None, "trend_short": "",
+             "tracked": True, "solo_cnt": 2},
+        ]
+        card = build_hanun_card(now_str="2026-11-13 17:00", issue_rows=issues,
+                                prev_issues={"조희대/사법부": {}}, person_rows=persons)
+        self.assertNotIn("한민수", card)
+        self.assertNotIn("이성윤", card)
+        self.assertIn("트럼프", card.split("<b>인물</b>")[1])
 
 
 if __name__ == "__main__":

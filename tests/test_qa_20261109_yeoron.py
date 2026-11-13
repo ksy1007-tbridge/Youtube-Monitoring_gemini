@@ -89,7 +89,7 @@ class BuildDefs(_Offline):
     def test_umbrella_video_desc_falls_to_news(self):
         d = m.build_defs([{"이슈명": ISSUE}], {ISSUE: [V_UMBRELLA]}, source="yeogwon",
                          caption=lambda v: None, news=lambda name: NEWS,
-                         aliases={ISSUE: main.ISSUE_KEYWORDS[ISSUE]})
+                         aliases={ISSUE: ["여론조사 조작", "여론조작", "여조 조작", "허위 응답"]})
         self.assertEqual(len(d["issues"]), 1)
         it = d["issues"][0]
         self.assertEqual(it["evidence_kind"], "news")
@@ -99,7 +99,7 @@ class BuildDefs(_Offline):
     def test_umbrella_video_no_news_gives_none(self):
         d = m.build_defs([{"이슈명": ISSUE}], {ISSUE: [V_UMBRELLA]}, source="yeogwon",
                          caption=lambda v: None, news=lambda name: None,
-                         aliases={ISSUE: main.ISSUE_KEYWORDS[ISSUE]})
+                         aliases={ISSUE: ["여론조사 조작", "여론조작", "여조 조작", "허위 응답"]})
         self.assertEqual(d["issues"], [])
 
     def test_title_with_keyword_preferred_as_evidence(self):
@@ -107,7 +107,7 @@ class BuildDefs(_Offline):
                 dict(V_YEORON, 설명="전북 여론조작 167명 송치 뒤 제보자가 배후는 빠졌다고 반발했다")]
         d = m.build_defs([{"이슈명": ISSUE}], {ISSUE: vids}, source="yeogwon",
                          caption=lambda v: None, news=lambda name: None,
-                         aliases={ISSUE: main.ISSUE_KEYWORDS[ISSUE]})
+                         aliases={ISSUE: ["여론조사 조작", "여론조작", "여조 조작", "허위 응답"]})
         it = d["issues"][0]
         self.assertEqual(it["evidence_url"], "https://youtu.be/nsRDA8d44AQ")
         self.assertIn("여론조작", it["definition_one_liner"])
@@ -131,38 +131,32 @@ def _df(rows):
 
 
 class IssueMatching(_Offline):
-    def _mask(self, titles):
-        s = pd.Series(titles)
-        return main.fixed_issue_title_mask(s, ISSUE, main.ISSUE_KEYWORDS[ISSUE]).tolist()
-
-    def test_yeoron_variant_matches(self):
-        self.assertEqual(self._mask([T_YEORON, "여조 조작 의혹 재점화", "여론 조작 공방 격화"]), [True, True, True])
-
-    def test_person_alone_does_not_match(self):
-        self.assertEqual(self._mask([T_UMBRELLA, "이상호 기자 뉴스비평 11월 3일"]), [False, False])
-
-    def test_person_with_topic_matches(self):
-        self.assertEqual(self._mask(["강진구 기자 “경선 여론조사 배후 있다”"]), [True])
-
-    def test_single_hit_event_issue_not_on_card(self):
-        df = _df([("뉴탐사 NewTamsa", T_YEORON, 3336), ("뉴탐사 NewTamsa", T_UMBRELLA, 6062),
-                  ("김용민TV", "유시민을 멕인 노무현 전 대통령?", 15128)])
-        iss, uncls = main.extract_major_issues(df, dict(main.ISSUE_KEYWORDS), {}, issue_must={})
-        names = iss["이슈명"].tolist()
-        self.assertNotIn(ISSUE, names)
-        self.assertIn("유시민 논란", names)  # 일반 고정 이슈는 1건이어도 기존처럼 카드에 남는다
-        self.assertIn(T_YEORON, uncls["제목"].tolist())
-
-    def test_two_hits_event_issue_on_card(self):
-        df = _df([("뉴탐사 NewTamsa", T_YEORON, 3336), ("서울의소리 VoiceOfSeoul", "전북 여론조작 송치 파장", 900),
+    def test_yeoron_auto_extract_needs_topic_not_person_alone(self):
+        df = _df([("뉴탐사 NewTamsa", T_YEORON, 3336),
+                  ("서울의소리 VoiceOfSeoul", "전북 여론조작 송치 파장", 900),
+                  ("스픽스", "여론 조작 공방 격화", 800),
                   ("뉴탐사 NewTamsa", T_UMBRELLA, 6062)])
-        iss, _ = main.extract_major_issues(df, dict(main.ISSUE_KEYWORDS), {}, issue_must={})
-        row = iss[iss["이슈명"] == ISSUE].iloc[0]
-        self.assertEqual(row["건수"], 2)
-        recs = iss.to_dict("records")
+        cands = {"issues": [{"name": "여론조사 조작 공방", "keywords": ["여론조작", "여론 조작", "여론조사"]}], "persons": []}
+        dyn, _, _ = main.filter_dynamic_entities(df, cands, None)
+        issues, _ = main.extract_major_issues(df, dyn)
+        names = issues["이슈명"].tolist() if issues is not None and not issues.empty else []
+        assert any("여론" in n or "여론조사 조작 공방" in n for n in names)
+        recs = issues.to_dict("records")
         with mock.patch.object(main, "build_defs", side_effect=lambda rows, videos, **k: videos):
-            videos = main.build_issue_defs(df, recs, dict(main.ISSUE_KEYWORDS))
-        self.assertNotIn(T_UMBRELLA, [v["제목"] for v in videos[ISSUE]])
+            videos = main.build_issue_defs(df, recs, dyn)
+        key = next(iter(videos))
+        assert T_UMBRELLA not in [v["제목"] for v in videos[key]]
+
+    def test_person_alone_does_not_make_issue(self):
+        df = _df([("뉴탐사 NewTamsa", T_UMBRELLA, 6062),
+                  ("고발뉴스TV", "이상호 기자 뉴스비평 11월 3일", 1000),
+                  ("스픽스", "강진구 기자 현장 스케치", 800)])
+        cands = {"issues": [{"name": "여론조사 조작 공방", "keywords": ["강진구", "이상호 기자"]}], "persons": []}
+        dyn, _, _ = main.filter_dynamic_entities(df, cands, None)
+        # 인물 단독 키워드 → 일반어/인물 단독 제외
+        assert not any("여론" in k for k in dyn)
+
+
 
 
 if __name__ == "__main__":

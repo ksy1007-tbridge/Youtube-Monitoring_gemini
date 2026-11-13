@@ -6,12 +6,10 @@ import html
 import re
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
-# 카드 전용 편중 임계 (리포트 ⚠편중 50%와 별개)
-HANUN_BIAS_PCT = 60.0
-# 소수 채널 예외: 채널 수가 이 값 미만(=1~2채널)이면 점유율과 무관하게 내부·편중.
-# 1~2채널 이슈는 사실상 특정 채널 기획이므로 편중으로 본다. 3채널 이상은
-# 최대 채널 점유율 ≥ HANUN_BIAS_PCT(60%) 규칙만 적용한다.
-# (예: 김어준 논란 9건·3채널·최대 49.2% → 확산. 10/29 카드 오분류 수정)
+# 카드 이슈를 내부·편중으로 보내는 유일한 기준: 최대 채널 조회 점유율 ≥ 80%.
+# 60% 임계와 '2채널이면 내부' 규칙은 쓰지 않는다. 건수 3·채널 2 하한은 채택 단계(issue_auto)에만 있다.
+HANUN_BIAS_PCT = 80.0
+# 인물 줄 보조(한동훈 등). 이슈 분류에는 쓰지 않음.
 HANUN_MIN_CHANNELS_SPREAD = 3
 # 인물 급등/급락 표기 임계(전일 대비 %)
 HANUN_PERSON_SWING_PCT = 50.0
@@ -24,7 +22,7 @@ MAX_ILLUSION = 3
 MEDIA_SCANDEL_KEYS = ("주진우", "김어준")
 
 # 신규 속보 이름 힌트 (전일 issues 키가 없을 때·보조)
-NEW_BREAKING_RE = re.compile(r"속보|구속\s*연장|긴급")
+NEW_BREAKING_RE = re.compile(r"속보|긴급")
 
 DYNAMIC_TAG = " (자동)"
 
@@ -46,13 +44,13 @@ def _conc_share(conc) -> Optional[float]:
 
 
 def is_new_issue(name: str, prev_issues: Optional[dict], *, is_auto: bool = False) -> bool:
-    """전일 issues 스냅샷에 없으면 신규. 스냅샷이 없거나 비면(마이그레이션·첫날) 이름 힌트·자동만."""
+    """신규 속보 예외는 이슈명에 속보|긴급이 있을 때만. 전일 스냅샷에 없음만으로는 예외가 아니다."""
     key = strip_auto(name)
+    if not NEW_BREAKING_RE.search(key):
+        return False
     if not prev_issues:
-        return bool(is_auto and NEW_BREAKING_RE.search(key))
-    if key not in prev_issues and name not in prev_issues:
         return True
-    return False
+    return key not in prev_issues and name not in prev_issues
 
 
 def classify_issue(
@@ -62,14 +60,10 @@ def classify_issue(
     is_new: bool,
 ) -> Tuple[str, bool]:
     """반환: ('spread'|'internal', used_new_exception).
-    규칙(문서화된 예외 외 없음):
-      1) 최대 채널 점유율 ≥ 60% → 내부·편중
-      2) 채널 수 < 3 (1~2채널) → 내부·편중 (소수 채널 예외)
-      3) 그 외 → 확산
-    신규 속보는 1)·2)를 덮어쓰고 ※표기한다."""
+    이슈를 내부·편중으로 보내는 규칙은 하나뿐이다: 최대 채널 점유율 ≥ 80%.
+    채널 수는 보지 않는다. 신규 속보(속보|긴급)는 이 규칙을 덮어쓰고 ※표기한다."""
     biased = top_share is not None and top_share >= HANUN_BIAS_PCT
-    few_channels = channels < HANUN_MIN_CHANNELS_SPREAD
-    if biased or few_channels:
+    if biased:
         if is_new:
             return "spread", True
         return "internal", False
@@ -92,6 +86,15 @@ def _issue_line(row: dict, *, new_exc: bool) -> str:
     share_s = f"·최대 {share:.0f}%" if share is not None else ""
     exc = " ※신규 속보 예외" if new_exc else ""
     return f"• <b>{name}</b> — {cnt}건·{ch}채널·{_fmt_views(views)}{share_s}{exc}"
+
+
+def has_solo_videos(p: dict) -> bool:
+    """단독(종합방송 제외) 영상이 1건 이상이면 True. 단독 0건은 인물 줄을 만들지 않는다."""
+    if p is None:
+        return False
+    if "solo_cnt" in p:
+        return int(p.get("solo_cnt") or 0) > 0
+    return int(p.get("views_standalone") or 0) > 0 or int(p.get("n_ch") or 0) > 0
 
 
 def _person_internal_line(p: dict) -> str:
@@ -164,7 +167,7 @@ def build_one_liner(
 ) -> str:
     """담백한 한 줄. 이슈 문장과 인물 급등 문장을 분리한다.
     - 이슈: 확산 상위 최대 2개 '넓게 깔린다' (조회 견인 표현 쓰지 않음)
-    - 인물: 전일 대비 +50% 이상만 '조회 급등'으로, 최대 채널 ≥60%면 (편중 N%) 표기
+    - 인물: 전일 대비 +50% 이상만 '조회 급등'으로, 최대 채널 ≥80%면 (편중 N%) 표기
       → 편중 급등만 있으면 '특정 채널 몰림'으로 서술해 과장 방지
     - 특정 인물(예: 김어준)을 이슈 이름만으로 '조회를 끌어올린다'고 쓰지 않는다."""
     names = [strip_auto(r["이슈명"]) for r in spread[:2] if r.get("이슈명")]
@@ -220,10 +223,10 @@ def build_hanun_card(
     unclassified_rows: Sequence[dict] = (),
 ) -> str:
     """텔레그램 HTML 한눈 카드."""
-    # 이슈 정렬: 채널 수 > 조회수
+    # 이슈 정렬: 조회수 > 건수 (채널 수 우선 해제)
     issues = sorted(
         list(issue_rows),
-        key=lambda r: (int(r.get("채널수") or 0), int(r.get("조회수") or 0)),
+        key=lambda r: (int(r.get("조회수") or 0), int(r.get("건수") or 0)),
         reverse=True,
     )
 
@@ -239,10 +242,13 @@ def build_hanun_card(
         item = {**row, "_new_exc": new_exc}
         (spread if bucket == "spread" else internal).append(item)
 
-    # 인물: 미디어 스캔들·한동훈·±50% 급변
+    # 인물: TRACK_PERSONS가 그날 제목에 나오면 클러스터 없어도 한 줄.
+    # 그 외(동적 인물)는 미디어 스캔들·한동훈·±50% 급변만.
     person_internal = []
     handong_seen = False
     for p in person_rows:
+        if not has_solo_videos(p):
+            continue
         key = strip_auto(p.get("name") or "")
         disp = p.get("display") or key
         pct = p.get("pct_change")  # float or None
@@ -250,12 +256,23 @@ def build_hanun_card(
         n_ch = int(p.get("n_ch") or 0)
         note = ""
         kind = "person"
+        tracked = bool(p.get("tracked"))
 
         if any(k in key for k in MEDIA_SCANDEL_KEYS):
             kind = "media"
             note = "미디어 스캔들"
             person_internal.append({**p, "display": disp, "note": note, "kind": kind})
-        elif "한동훈" in key:
+            if "한동훈" in key:
+                handong_seen = True
+            continue
+        if tracked:
+            if "한동훈" in key:
+                handong_seen = True
+            if pct is not None and pct <= -50:
+                note = f"열기 식는 중({pct:.0f}%)"
+            person_internal.append({**p, "display": disp, "note": note, "kind": kind})
+            continue
+        if "한동훈" in key:
             handong_seen = True
             biased = top_share is not None and float(top_share) >= HANUN_BIAS_PCT
             few = n_ch and n_ch < HANUN_MIN_CHANNELS_SPREAD
@@ -275,7 +292,7 @@ def build_hanun_card(
     # 체크리스트: 한동훈이 이슈/인물에 있으면 반드시 한 줄
     if not handong_seen:
         for p in person_rows:
-            if "한동훈" in strip_auto(p.get("name") or ""):
+            if "한동훈" in strip_auto(p.get("name") or "") and has_solo_videos(p):
                 person_internal.append({**p, "display": p.get("display") or "한동훈", "note": "", "kind": "person"})
                 handong_seen = True
                 break
@@ -316,12 +333,16 @@ def build_hanun_card(
         lines.append("• 해당 없음")
 
     lines += ["", f"<b>내부·편중 (참고만)</b>"]
-    body_internal = []
-    for row in internal[:MAX_INTERNAL]:
-        body_internal.append(_issue_line(row, new_exc=False))
-    for p in person_internal[:MAX_INTERNAL]:
-        body_internal.append(_person_internal_line(p))
-    lines.extend(body_internal[:MAX_INTERNAL] or ["• 해당 없음"])
+    # 인물 줄은 내부 이슈 5줄 한도 밖. TRACK 인물은 이슈 클러스터가 없어도 한다.
+    issue_lines = [_issue_line(row, new_exc=False) for row in internal[:MAX_INTERNAL]]
+    person_lines = [_person_internal_line(p) for p in person_internal]
+    if issue_lines:
+        lines.extend(issue_lines)
+    elif not person_lines:
+        lines.append("• 해당 없음")
+    if person_lines:
+        lines += ["", f"<b>인물</b>"]
+        lines.extend(person_lines)
 
     illusions = collect_illusion_lines(df_top_rows, unclassified_rows)
     lines += ["", f"<b>무시해도 되는 착시</b>"]

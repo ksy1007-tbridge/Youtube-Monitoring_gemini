@@ -125,7 +125,7 @@ def test_build_one_weak_mock_summarize_rejected():
     v = {"채널명": "c", "제목": "t", "조회수": 1, "링크": "https://y/1"}
     lines = {"d": "유시민 관련 MBC 라디오 〈김종배의 시선집중〉 261103(화) 방송"}
     summ = lambda raw, issue_name=None: raw
-    news = lambda n: {"channel": "c", "title": "x", "url": "u", "text": "유시민 전 이사장 발언이 합당 논쟁으로 번졌다"}
+    news = lambda n: {"channel": "c", "title": "유시민 전 이사장 발언 파장", "url": "u", "text": "유시민 전 이사장 발언이 합당 논쟁으로 번졌다"}
     line, ev = _d._build_one("유시민", [v], summ, lambda v: lines["d"], lambda v: None, news)
     assert ev["evidence_kind"] == "news"
 
