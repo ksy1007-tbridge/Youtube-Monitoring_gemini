@@ -172,5 +172,23 @@ class HanunCardRules(unittest.TestCase):
 
 
 
+
+    def test_tracked_person_appears_without_cluster_or_swing(self):
+        issues = [{"이슈명": "조희대/사법부", "건수": 5, "채널수": 4, "조회수": 200000,
+                   "concentration": {"top_share": 40.0}, "is_auto": False}]
+        persons = [
+            {"name": "트럼프", "display": "트럼프", "views_standalone": 12000,
+             "top_share": 40.0, "n_ch": 3, "pct_change": 5, "trend_short": "+5%", "tracked": True},
+            {"name": "최민희", "display": "최민희", "views_standalone": 8000,
+             "top_share": 30.0, "n_ch": 2, "pct_change": 0, "trend_short": "", "tracked": True},
+        ]
+        card = build_hanun_card(now_str="2026-11-13 16:00", issue_rows=issues,
+                                prev_issues={"조희대/사법부": {}}, person_rows=persons)
+        person_part = card.split("<b>인물</b>")[1] if "<b>인물</b>" in card else ""
+        self.assertIn("트럼프", person_part)
+        self.assertIn("최민희", person_part)
+        self.assertNotIn("트럼프", card.split("확산")[1].split("내부·편중")[0])
+
+
 if __name__ == "__main__":
     unittest.main()

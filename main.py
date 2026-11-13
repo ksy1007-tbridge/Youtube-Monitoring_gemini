@@ -124,6 +124,7 @@ TRACK_PERSONS = {
     "조희대": ["조희대"],
     "추미애": ["추미애"],   # 경기도지사, 여권 인사 (10/21부터 연속 상위 → 고정)
     "오세훈": ["오세훈"],   # 서울시장 (자치단체장, 통상 정당 표기 없음)
+    "트럼프": ["트럼프", "Trump"],
 }
 # 고정 인물 편입 전 '(자동)' 키로 저장된 전일 값을 이어 쓰기 위한 대응 (전일 대비 끊김 방지)
 PREV_PERSON_KEY_FALLBACK = {"추미애": "추미애 (자동)", "오세훈": "오세훈 (자동)"}
@@ -440,13 +441,11 @@ def extract_major_issues(df, issue_keywords=None, absorbed=None, issue_must=None
         })
         claimed.add(idx)
 
-    adopted, dropped, dropped_share = adopt_after_assign(issues, by_issue, apply_share=True)
-    adopted_nos, _, _ = adopt_after_assign(issues, by_issue, apply_share=False)
-    adopted_names = {a["name"] for a in adopted}
-    share_only = [r for r in adopted_nos if r["name"] not in adopted_names]
-    if share_only:
-        print("ℹ️ [자동 추출] 80% 규칙만으로 탈락(소연 확인용): " + ", ".join(
-            f"{strip_tag(r['name'])} {r['top_share']}%" for r in share_only))
+    adopted, dropped, dropped_share = adopt_after_assign(issues, by_issue, apply_share=False)
+    share_internal = [r for r in adopted if (r.get("top_share") or 0) >= DYNAMIC_MAX_CHANNEL_SHARE]
+    if share_internal:
+        print("ℹ️ [자동 추출] 80% 이상 → 내부·편중(참고만): " + ", ".join(
+            f"{strip_tag(r['name'])} {r['top_share']}%" for r in share_internal))
 
     # 같은 표시명으로 라벨된 묶음은 합친다
     grouped = {}
@@ -1325,6 +1324,7 @@ def run_monitoring():
                 "pct_change": _pct,
                 "trend_short": (f"{_pct:+.0f}%" if _pct is not None else ("신작" if is_new_clip else "")),
                 "from_issue": False,
+                "tracked": p in TRACK_PERSONS,
             })
 
     # 단독 조회수(Standalone Views) 기준 1순위 정렬 고정 (착시 차단)
@@ -1353,6 +1353,8 @@ def run_monitoring():
         df_top_rows=hanun_top_rows,
         unclassified_rows=hanun_uncl_rows,
     )
+    if DRY_RUN:
+        print("[DRY_RUN] 한눈 카드 미리보기:\n" + hanun_html)
 
     save_current_data({
         "timestamp": now_str,

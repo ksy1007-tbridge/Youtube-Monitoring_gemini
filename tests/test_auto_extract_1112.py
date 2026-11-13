@@ -16,10 +16,12 @@ class AliasLabel(unittest.TestCase):
         self.assertEqual(al.label_issue("성남라인 의혹", ["성남라인"]), "성남라인 의혹")
 
     def test_ganghoonsik_bundle_gets_display(self):
-        self.assertEqual(al.label_issue("강훈식 공천", ["강훈식"]), "강훈식·성남라인")
+        self.assertEqual(al.label_issue("강훈식 성남라인 공천", ["강훈식", "성남라인"]), "강훈식·성남라인")
+        self.assertEqual(al.label_issue("강훈식 공천", ["강훈식"]), "강훈식 공천")
 
     def test_kimeojun_and_yeoron_labels(self):
-        self.assertEqual(al.label_issue("김어준 열폭", ["김어준"]), "김어준 논란")
+        self.assertEqual(al.label_issue("김어준 논란 열폭", ["김어준", "논란"]), "김어준 논란")
+        self.assertEqual(al.label_issue("김어준 열폭", ["김어준"]), "김어준 열폭")
         self.assertEqual(al.label_issue("여론조작 송치", ["여론조작"]), "여론조사 조작 공방")
 
     def test_label_does_not_steal_unrelated(self):
@@ -82,6 +84,45 @@ class QaDefs1112(unittest.TestCase):
         # main: 리드·본문에 핵심어가 있는 후보만. 제목만 있는 기사는 거절
         picked = d._pick_news(items, ["김어준"])
         self.assertEqual(picked["title"], "한덕수 석방 가능성에 조희대 책임론")
+
+
+class LabelRegression1113(unittest.TestCase):
+    def test_jensen_huang_not_real_estate(self):
+        self.assertNotEqual(
+            al.label_issue("반도체 공급망 및 젠슨 황 관련 이슈", ["반도체", "젠슨 황", "삼성전자"]),
+            "부동산·증시",
+        )
+        self.assertNotEqual(al.label_issue("젠슨 황 방한", ["젠슨 황", "삼성전자"]), "부동산·증시")
+
+    def test_people_power_discipline_not_yeoron(self):
+        self.assertNotEqual(
+            al.label_issue("국민의힘 내부 징계 및 경선 의혹", ["장동혁", "징계", "조작"]),
+            "여론조사 조작 공방",
+        )
+
+    def test_choiminhee_not_faction(self):
+        self.assertNotEqual(
+            al.label_issue("최민희 의원 관련 논란", ["최민희", "하이에나"]),
+            "당내 계파 갈등",
+        )
+        self.assertEqual(al.label_issue("최민희 하이에나", ["최민희"]), "최민희 하이에나")
+
+
+class JunkTokenRegression1113(unittest.TestCase):
+    def test_project_and_summit_are_junk(self):
+        from issue_auto import is_junk_token, is_junk_issue_name, extract_offline_candidates
+        for tok in ["프로젝트", "최고위"]:
+            self.assertTrue(is_junk_token(tok), tok)
+            self.assertTrue(is_junk_issue_name(tok), tok)
+        titles = [
+            "프로젝트 점검 1", "프로젝트 점검 2", "프로젝트 점검 3",
+            "최고위 회의 1", "최고위 회의 2", "최고위 회의 3",
+            "한덕수 석방 논의", "한덕수 석방 파장", "한덕수 석방 후속",
+        ]
+        names = [i["name"] for i in extract_offline_candidates(titles).get("issues", [])]
+        self.assertTrue(any("한덕수" in n for n in names))
+        self.assertFalse(any("프로젝트" in n or n == "최고위" for n in names), names)
+
 
 
 if __name__ == "__main__":

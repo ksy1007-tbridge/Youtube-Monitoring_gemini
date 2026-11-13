@@ -239,7 +239,8 @@ def build_hanun_card(
         item = {**row, "_new_exc": new_exc}
         (spread if bucket == "spread" else internal).append(item)
 
-    # 인물: 미디어 스캔들·한동훈·±50% 급변
+    # 인물: TRACK_PERSONS가 그날 제목에 나오면 클러스터 없어도 한 줄.
+    # 그 외(동적 인물)는 미디어 스캔들·한동훈·±50% 급변만.
     person_internal = []
     handong_seen = False
     for p in person_rows:
@@ -250,12 +251,23 @@ def build_hanun_card(
         n_ch = int(p.get("n_ch") or 0)
         note = ""
         kind = "person"
+        tracked = bool(p.get("tracked"))
 
         if any(k in key for k in MEDIA_SCANDEL_KEYS):
             kind = "media"
             note = "미디어 스캔들"
             person_internal.append({**p, "display": disp, "note": note, "kind": kind})
-        elif "한동훈" in key:
+            if "한동훈" in key:
+                handong_seen = True
+            continue
+        if tracked:
+            if "한동훈" in key:
+                handong_seen = True
+            if pct is not None and pct <= -50:
+                note = f"열기 식는 중({pct:.0f}%)"
+            person_internal.append({**p, "display": disp, "note": note, "kind": kind})
+            continue
+        if "한동훈" in key:
             handong_seen = True
             biased = top_share is not None and float(top_share) >= HANUN_BIAS_PCT
             few = n_ch and n_ch < HANUN_MIN_CHANNELS_SPREAD
@@ -316,13 +328,16 @@ def build_hanun_card(
         lines.append("• 해당 없음")
 
     lines += ["", f"<b>내부·편중 (참고만)</b>"]
-    # 인물 줄(미디어 스캔들·한동훈 체크 포함)은 내부 이슈 5줄 한도 밖
+    # 인물 줄은 내부 이슈 5줄 한도 밖. TRACK 인물은 이슈 클러스터가 없어도 한다.
     issue_lines = [_issue_line(row, new_exc=False) for row in internal[:MAX_INTERNAL]]
     person_lines = [_person_internal_line(p) for p in person_internal]
-    if issue_lines or person_lines:
-        lines.extend(issue_lines + person_lines)
-    else:
+    if issue_lines:
+        lines.extend(issue_lines)
+    elif not person_lines:
         lines.append("• 해당 없음")
+    if person_lines:
+        lines += ["", f"<b>인물</b>"]
+        lines.extend(person_lines)
 
     illusions = collect_illusion_lines(df_top_rows, unclassified_rows)
     lines += ["", f"<b>무시해도 되는 착시</b>"]

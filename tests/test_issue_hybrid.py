@@ -148,7 +148,7 @@ def test_dedupe_live_and_reupload():
     assert len(main.dedupe_reuploads(df2)[0]) == 2
 
 
-def test_single_channel_share_drops_issue(capsys):
+def test_high_share_goes_internal_not_dropped(capsys):
     rows = [("스픽스", f"쟁점X {i}", 100000, 900) for i in range(4)] + [("MBC 라디오 시사", "쟁점X 반론", 1000, 900),
             ("MBC 라디오 시사", "쟁점Y 1", 2000, 900), ("서울의소리 VoiceOfSeoul", "쟁점Y 2", 2000, 900),
             ("스픽스", "쟁점Y 3", 2000, 900)]
@@ -156,11 +156,22 @@ def test_single_channel_share_drops_issue(capsys):
     main.AUTO_ISSUE_MUST.clear()
     issues, _ = main.extract_major_issues(df, {"쟁점X (자동)": ["쟁점X"], "쟁점Y (자동)": ["쟁점Y"]})
     names = list(issues["이슈명"]) if issues is not None and not issues.empty else []
-    assert "쟁점X" not in names and "쟁점X (자동)" not in names  # 99.8% → 80% 탈락
+    assert any("쟁점X" in n for n in names)  # 99.8%라도 탈락하지 않음
     assert any("쟁점Y" in n for n in names)
+    rowx = issues[issues["이슈명"].astype(str).str.contains("쟁점X")].iloc[0]
+    share = (rowx.get("concentration") or {}).get("top_share") if isinstance(rowx.get("concentration"), dict) else None
+    assert share is None or share >= 80
     log = capsys.readouterr().out
-    assert "80% 규칙만으로 탈락" in log and "쟁점X" in log
+    assert "내부·편중" in log and "쟁점X" in log
+    assert "80% 규칙만으로 탈락" not in log
 
 
 def test_choo_oh_are_fixed_persons():
     assert main.TRACK_PERSONS["추미애"] == ["추미애"] and main.TRACK_PERSONS["오세훈"] == ["오세훈"]
+
+
+def test_trump_only_added_to_track_persons():
+    assert "트럼프" in main.TRACK_PERSONS
+    assert "Trump" in main.TRACK_PERSONS["트럼프"]
+    assert "한덕수" not in main.TRACK_PERSONS
+    assert "윤석열" not in main.TRACK_PERSONS

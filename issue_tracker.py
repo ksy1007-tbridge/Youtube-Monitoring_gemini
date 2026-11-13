@@ -23,6 +23,49 @@ _TOKEN_STOPWORDS = {
 }
 
 
+# 라벨·겹침 통합에서 인물을 가리키는 이름. TRACK_PERSONS와 별개(한덕수·윤석열은 추적 인물이 아님).
+KNOWN_PERSONS = frozenset({
+    "정청래", "김민석", "김어준", "유시민", "이재명", "최민희", "백낙청", "송영길",
+    "이석현", "한민수", "최강욱", "이성윤", "정봉주", "한동훈", "김지용", "장동혁",
+    "강훈식", "조희대", "추미애", "오세훈", "트럼프", "Trump",
+    "한덕수", "윤석열", "젠슨 황", "젠슨황", "이용철",
+})
+
+
+def person_set():
+    """이슈명에서 인물을 찾을 때 쓰는 이름 집합."""
+    names = set(KNOWN_PERSONS)
+    try:
+        for p in (load_person_facts().get("persons") or []):
+            n = (p.get("name") or "").strip()
+            if n:
+                names.add(n)
+            for a in p.get("aliases") or []:
+                a = (a or "").strip()
+                if a and len(a) >= 2:
+                    names.add(a)
+    except Exception:
+        pass
+    return names
+
+
+def leading_person(text: str, persons=None) -> str:
+    """텍스트에 가장 먼저 나오는 인물명. 같은 자리면 더 긴 이름을 고른다."""
+    persons = persons if persons is not None else person_set()
+    t = strip_tag(text or "")
+    found = []
+    for p in persons:
+        if not p or len(p) < 2:
+            continue
+        i = t.find(p)
+        if i >= 0:
+            found.append((i, -len(p), p))
+    if not found:
+        return ""
+    found.sort()
+    return found[0][2]
+
+
 def strip_tag(name: str) -> str:
     name = (name or "").strip()
     return name[: -len(AUTO_TAG)].strip() if name.endswith(AUTO_TAG) else name
@@ -38,7 +81,8 @@ def _terms(name: str, keywords) -> list:
 
 
 def _overlap_score(terms_a, terms_b) -> int:
-    """키워드/별칭 겹침 수: 같은 문자열이거나 한쪽이 다른 쪽을 포함(예: '조희대 탄핵' ⊃ '조희대')."""
+    """키워드/별칭 겹침 수: 같은 문자열이거나 한쪽이 다른 쪽을 포함(예: '조희대 탄핵' ⊃ '조희대').
+    짧은 부분일치는 통합 판단에 쓰지 않는다. 하위 호환·디버그용으로 남겨 둔다."""
     score = 0
     for a in terms_a:
         if any(a == b or (len(b) >= 2 and b in a) or (len(a) >= 2 and a in b) for b in terms_b):
@@ -46,13 +90,41 @@ def _overlap_score(terms_a, terms_b) -> int:
     return score
 
 
+def _shared_terms(terms_a, terms_b):
+    """정확한 일치, 또는 4글자 이상 구가 서로 포함될 때만 공유로 본다."""
+    shared = set()
+    for a in terms_a:
+        for b in terms_b:
+            if a == b:
+                shared.add(a)
+            elif len(a) >= 4 and len(b) >= 4 and (a in b or b in a):
+                shared.add(a if len(a) <= len(b) else b)
+    return shared
+
+
+def issues_should_merge(name_a, kws_a, name_b, kws_b) -> bool:
+    """자동 이슈를 합칠지. 대표 인물이 다르면 합치지 않는다(한덕수 석방 ⊄ 조희대/사법부).
+    같은 인물이면 공유 사건어가 있어야 하고, 인물이 없으면 공유 실체어가 2개 이상(또는 4글자+)이어야 한다."""
+    pa = leading_person(strip_tag(name_a))
+    pb = leading_person(strip_tag(name_b))
+    if pa and pb and pa != pb:
+        return False
+    shared = _shared_terms(_terms(name_a, kws_a), _terms(name_b, kws_b))
+    persons = person_set()
+    if pa and pa == pb:
+        return any(t != pa and t not in persons for t in shared)
+    if len(shared) >= 2:
+        return True
+    return any(len(t) >= 4 for t in shared)
+
+
 def merge_auto_into_fixed(auto_issues: dict, fixed_issues: dict = None, extra_fixed_terms: dict = None):
-    """자동끼리 키워드·이름이 겹치면 하나로 합친다.
+    """자동끼리 키워드·이름이 겹치면 하나로 합친다(조건을 더 엄격히).
     fixed_issues·extra_fixed_terms는 호환을 위해 받지만 사용하지 않는다(고정 칸 흡수 분기 제거).
     반환: (남은 자동 이슈 {이름: 키워드}, 흡수 내역 {남은 이슈명: [합쳐진 이슈명...]})."""
     absorbed, merged = {}, {}
     for name, kws in (auto_issues or {}).items():
-        target = next((m for m, mk in merged.items() if _overlap_score(_terms(name, kws), _terms(m, mk))), None)
+        target = next((m for m, mk in merged.items() if issues_should_merge(name, kws, m, mk)), None)
         if target:
             merged[target] = list(dict.fromkeys(merged[target] + list(kws)))
             absorbed.setdefault(target, []).append(name)

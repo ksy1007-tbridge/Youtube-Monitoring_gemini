@@ -47,6 +47,8 @@ _STOP = frozenset({
     "아니다", "그렇다", "맞다", "해체하라", "브리핑", "MBC", "FULL", "KBS", "SBS",
     "숏탐사", "정치숏탐사", "뉴스바사삭", "뉴스하이킥", "현장라이브", "1분바사삭",
     "종대타임", "뉴잼스",
+    "프로젝트", "최고위", "최고위원", "간담회", "워크숍", "현안", "소식",
+    "모음집", "이슈모음", "관련소식", "공식입장",
 })
 
 # 날짜 코드·방송 표기 등 — 이슈명/사건어로 쓰지 않음
@@ -93,7 +95,8 @@ def is_junk_issue_name(name: str) -> bool:
 def log_thresholds() -> None:
     print(
         f"ℹ️ [자동 추출] 채택 임계: 제목>={DYNAMIC_MIN_TITLES} 채널>={DYNAMIC_MIN_CHANNELS} "
-        f"최대채널점유<{DYNAMIC_MAX_CHANNEL_SHARE}% high_view_exempt={DYNAMIC_HIGH_VIEW_EXEMPT} "
+        f"최대채널점유>={DYNAMIC_MAX_CHANNEL_SHARE}%는 내부·편중(탈락 아님) "
+        f"high_view_exempt={DYNAMIC_HIGH_VIEW_EXEMPT} "
         f"(고조회={DYNAMIC_HIGH_VIEW}) 상한={DYNAMIC_MAX_ISSUES}"
     )
 
@@ -129,9 +132,21 @@ def title_share(views_by_channel: dict) -> float:
     return round(max(views_by_channel.values()) / total * 100, 1)
 
 
+def issue_bucket(n_channels: int, top_share=None, *, bias_pct: float = 60.0,
+                 min_channels_spread: int = 3) -> str:
+    """'spread' 또는 'internal'. 채널 수 < 3이거나 최대 점유율 ≥ bias_pct(조회 없으면 채널만)."""
+    if int(n_channels or 0) < min_channels_spread:
+        return "internal"
+    if top_share is not None and float(top_share) >= bias_pct:
+        return "internal"
+    return "spread"
+
+
 def passes_thresholds(n_titles: int, n_channels: int, top_share: float,
-                      max_view: int = 0, *, apply_share: bool = True) -> tuple:
-    """반환: (통과 여부, 탈락 이유 또는 ''). apply_share=False면 80% 규칙은 평가만 하고 탈락시키지 않음."""
+                      max_view: int = 0, *, apply_share: bool = False) -> tuple:
+    """반환: (통과 여부, 탈락 이유 또는 ''). 건수·채널 하한만 탈락 기준.
+    apply_share=True는 하위 호환(과거 80% 탈락)용이며 기본은 쓰지 않는다.
+    80% 이상은 탈락이 아니라 내부·편중(참고만)으로 보낸다."""
     if n_titles < DYNAMIC_MIN_TITLES or n_channels < DYNAMIC_MIN_CHANNELS:
         if DYNAMIC_HIGH_VIEW_EXEMPT and max_view >= DYNAMIC_HIGH_VIEW and n_titles > 0:
             pass
@@ -209,7 +224,7 @@ def summarize_group(sel) -> dict:
     }
 
 
-def adopt_after_assign(issues, by_issue, *, apply_share=True):
+def adopt_after_assign(issues, by_issue, *, apply_share=False):
     """배정 후 임계를 다시 적용. 탈락 이슈의 영상은 재배정하지 않고 사유만 남긴다.
     반환: (채택 이슈 목록(stats 포함), 탈락 [{name, reason, stats}], 80%만으로 탈락한 것).
     """

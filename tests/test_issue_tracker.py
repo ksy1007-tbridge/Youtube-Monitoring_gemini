@@ -77,3 +77,18 @@ def test_sensational_issue_name_blocked():
 def test_person_only_name_not_issue():
     assert check_issue_name("추미애", ["추미애"]) is None
     assert check_issue_name("탁현민", [], person_names=["탁현민"]) is None
+
+
+def test_handeoksu_release_not_merged_into_chohee():
+    auto = {
+        "한덕수 석방 및 사법부 대응 논란 (자동)": ["석방", "조희대", "탄핵"],
+        "조희대 탄핵 (자동)": ["조희대", "탄핵"],
+    }
+    remaining, absorbed = merge_auto_into_fixed(auto, FIXED)
+    names = [n.replace(" (자동)", "") for n in remaining]
+    assert any("한덕수" in n for n in names)
+    assert any("조희대" in n for n in names)
+    # 한쪽이 다른 쪽에 흡수되면 안 됨
+    flat = " ".join(sum(absorbed.values(), []))
+    assert "한덕수" not in flat and "조희대 탄핵" not in " ".join(absorbed)
+    assert absorbed == {}
