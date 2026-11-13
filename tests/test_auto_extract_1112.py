@@ -51,23 +51,20 @@ class QaDefs1112(unittest.TestCase):
              "링크": "https://youtu.be/0sHmF0H6nFg", "프레임": "당내/인물", "설명": title + "\n후원 계좌 안내"}
         out = d.build_defs([{"이슈명": "김어준 논란"}], {"김어준 논란": [v]}, source="yeogwon",
                            caption=lambda x: None, news=lambda n: None, aliases={"김어준 논란": ["김어준"]})
-        # 제목 복붙 설명란은 거부. 제목 폴백이면 evidence_kind는 title
-        if out["issues"]:
-            self.assertNotEqual(out["issues"][0]["evidence_kind"], "description")
-            if out["issues"][0]["evidence_kind"] == "title":
-                self.assertNotEqual(out["issues"][0]["definition_one_liner"].rstrip("…"), title[:60].rstrip())
-
-    def test_news_requires_core_in_title(self):
-        news = {"channel": "서울신문",
-                "title": "한덕수 석방 가능성에…與 내부서 고개드는 ‘조희대 책임론’",
-                "url": "https://www.seoul.co.kr/x",
-                "text": "이성윤 최고위원은 유튜브 ‘김어준의 겸손은 힘들다 뉴스공장’에서 조 대법원장 탄핵 문제를 두고 말했다."}
-        # 제목에 김어준 없음 → 보도 거절
-        out = d.build_defs([{"이슈명": "김어준 논란"}], {"김어준 논란": []}, source="spectrum",
-                           caption=lambda x: None, news=lambda n: news, aliases={"김어준 논란": ["김어준"]})
+        # 제목 복붙 설명란은 거부. main 이후 제목만으로는 정의를 만들지 않음
         self.assertEqual(out["issues"], [])
-        # 제목에 핵심어가 있으면 채택
-        ok = dict(news, title="김어준 방송 발언 논란", text="김어준 방송 발언을 두고 비판이 이어졌다.")
+
+    def test_news_requires_core_in_body(self):
+        # main: 제목만 있고 리드·본문에 핵심어가 없으면 거절
+        title_only = {"channel": "서울신문",
+                      "title": "김어준 방송 발언 논란",
+                      "url": "https://www.seoul.co.kr/x",
+                      "text": "김어준 방송 발언 논란"}
+        out = d.build_defs([{"이슈명": "김어준 논란"}], {"김어준 논란": []}, source="spectrum",
+                           caption=lambda x: None, news=lambda n: title_only, aliases={"김어준 논란": ["김어준"]})
+        self.assertEqual(out["issues"], [])
+        # 본문에 핵심어가 있으면 채택
+        ok = dict(title_only, text="김어준 방송 발언을 두고 비판이 이어졌다.")
         out2 = d.build_defs([{"이슈명": "김어준 논란"}], {"김어준 논란": []}, source="spectrum",
                             caption=lambda x: None, news=lambda n: ok, aliases={"김어준 논란": ["김어준"]})
         self.assertEqual(len(out2["issues"]), 1)
@@ -82,8 +79,9 @@ class QaDefs1112(unittest.TestCase):
             {"title": "한덕수 석방 가능성에 조희대 책임론", "lead": "김어준의 겸손은 힘들다 뉴스공장에서 발언", "ts": 2},
             {"title": "김어준 열폭 논란", "lead": "", "ts": 1},
         ]
+        # main: 리드·본문에 핵심어가 있는 후보만. 제목만 있는 기사는 거절
         picked = d._pick_news(items, ["김어준"])
-        self.assertEqual(picked["title"], "김어준 열폭 논란")
+        self.assertEqual(picked["title"], "한덕수 석방 가능성에 조희대 책임론")
 
 
 if __name__ == "__main__":

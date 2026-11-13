@@ -3,9 +3,13 @@ import issue_defs as d
 
 RSS = """<rss><channel>
 <item><title>여야 예산안 공방 - 가신문</title><link>https://news.google.com/rss/articles/AAA</link>
-<pubDate>Tue, 03 Nov 2026 09:00:00 GMT</pubDate><source url="https://a.kr">가신문</source></item>
+<pubDate>Tue, 03 Nov 2026 09:00:00 GMT</pubDate>
+<description>여야가 내년 예산안을 놓고 대치했다.</description>
+<source url="https://a.kr">가신문</source></item>
 <item><title>유시민 발언 파장 - 나일보</title><link>https://news.google.com/rss/articles/BBB</link>
-<pubDate>Tue, 03 Nov 2026 07:00:00 GMT</pubDate><source url="https://b.kr">나일보</source></item>
+<pubDate>Tue, 03 Nov 2026 07:00:00 GMT</pubDate>
+<description>유시민 전 이사장의 방송 발언이 정치권에서 파장을 일으켰다.</description>
+<source url="https://b.kr">나일보</source></item>
 </channel></rss>"""
 
 
@@ -53,8 +57,8 @@ def test_page_failures_safe_fallback(monkeypatch):
     monkeypatch.setattr(d.requests, "get", get)
     monkeypatch.delenv("ISSUE_DEFS_NEWS_DISABLE", raising=False)
     n = d.fetch_news("유시민 논란")
-    assert n["title"] == "유시민 발언 파장" and n["text"] == "유시민 발언 파장"
-    assert n["url"].startswith("https://news.google.com/")
+    # 원문 보강은 실패해도 RSS 리드에 핵심어가 있으면 채택
+    assert n["title"] == "유시민 발언 파장" and "유시민 전 이사장" in n["text"]
 
 
 def test_disable_env(monkeypatch):

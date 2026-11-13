@@ -4,8 +4,9 @@
 설계: telegram_issue_qa_design.md §1·§2·§5(A)
 - build_defs(issue_rows, videos, source="yeogwon") -> dict
 - publish_defs(defs) -> None  (Cloudflare KV REST PUT, 실패/미설정이어도 예외 없음)
-근거 순서: 이슈별 조회수 상위 단독 영상 설명란 → 보도 1건 → (최후) 영상 제목. 근거 없으면 정의 생략.
-  ※ 자막 단계(fetch_caption_head)는 미구현(항상 None) — 실제로는 '설명란 → 보도' 순서로 동작한다.
+근거 순서: 이슈별 조회수 상위 단독 영상 설명란 → 자막 앞부분(~1분, youtube-transcript-api, 키 불필요) → 보도 1건(리드·본문 핵심어 필수).
+  제목·설명란 목차 줄만인 정의는 거부. 라이브/하이라이트이고 자막이 없으면 설명란 번호 목차 제목으로 같은 채널→유튜브에서 ~7일 안 본편을 찾아 자막을 쓴다.
+  본편·보도 본문 근거가 없으면 정의를 생략한다(제목 폴백 없음).
 """
 import os
 import re
@@ -17,6 +18,7 @@ import requests
 KST = timezone(timedelta(hours=9))
 DYNAMIC_TAG = " (자동)"
 ONE_LINER_MAX = 60
+ONE_LINER_HARD_MAX = 100  # 완전한 문장은 이 안에서는 자르지 않음
 KV_TTL_SEC = 7 * 24 * 3600
 CF_API_BASE = "https://api.cloudflare.com/client/v4"
 # 종합방송(풀버전/OMNIBUS)은 '단독' 영상이 아니므로 근거에서 제외
@@ -63,10 +65,49 @@ def fetch_description(video: dict):
         return None
 
 
+def _video_id(video: dict):
+    m = _VIDEO_ID_RE.search(str((video or {}).get("링크") or (video or {}).get("video_id") or ""))
+    return m.group(1) if m else None
+
+
 def fetch_caption_head(video: dict, seconds: int = 60):
-    """자막 앞부분(~1분). 미구현: captions API는 OAuth 필요, yt-dlp 자동자막은 외부 의존·429 위험.
-    항상 None을 돌려주므로 근거 순서에서 자막 단계는 실제로 건너뛴다(설명란 → 보도)."""
-    return None
+    """자막 앞부분(~1분). youtube-transcript-api(키 불필요). 없거나 실패하면 None.
+    TubeAlfred MCP는 GitHub Actions에서 호출할 수 없어 이 경로를 쓴다."""
+    vid = _video_id(video)
+    if not vid:
+        return None
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+    except ImportError:
+        print("ℹ️ [issue_defs] youtube-transcript-api 미설치 → 자막 생략")
+        return None
+    try:
+        snippets = None
+        langs = ["ko", "ko-KR", "en"]
+        if hasattr(YouTubeTranscriptApi, "get_transcript"):
+            try:
+                snippets = YouTubeTranscriptApi.get_transcript(vid, languages=langs)
+            except Exception:
+                snippets = YouTubeTranscriptApi.get_transcript(vid)
+        else:
+            fetched = YouTubeTranscriptApi().fetch(vid, languages=langs)
+            snippets = list(fetched)
+        parts = []
+        for sn in snippets or []:
+            if isinstance(sn, dict):
+                start, text = float(sn.get("start") or 0), sn.get("text") or ""
+            else:
+                start, text = float(getattr(sn, "start", 0) or 0), getattr(sn, "text", "") or ""
+            if start > seconds:
+                break
+            t = " ".join(str(text).split())
+            if t:
+                parts.append(t)
+        out = " ".join(parts).strip()
+        return out or None
+    except Exception as e:
+        print(f"ℹ️ [issue_defs] 자막 없음/실패: {_redact(e)}")
+        return None
 
 
 GOOGLE_NEWS_RSS = "https://news.google.com/rss/search"
@@ -128,15 +169,22 @@ def parse_news_items(xml_text: str, limit: int = NEWS_CANDIDATES):
     return items[:limit]
 
 
+def _lead_has_kw(item: dict, kws) -> bool:
+    """제목만이 아니라 리드·본문에 핵심어가 있는지."""
+    lead = (item or {}).get("lead") or ""
+    return any(k in lead for k in (kws or []) if k)
+
+
 def _pick_news(items, kws):
-    """핵심어가 기사 제목에 있는 후보만 채택(리드에 프로그램명만 있는 기사는 거절). 동점은 최신."""
+    """핵심어가 리드·본문에 있는 후보 중, 제목·리드 점수가 가장 높은 것(동점은 최신).
+    핵심어가 있는데 리드·본문 매칭이 없으면 None(제목만 매칭 거부). 핵심어 자체가 없을 때만 최신 1건."""
     if not items:
         return None
     if kws:
-        titled = [x for x in items if any(k in (x.get("title") or "") for k in kws)]
-        if not titled:
+        eligible = [x for x in items if _lead_has_kw(x, kws)]
+        if not eligible:
             return None
-        return max(titled, key=lambda x: (_kw_score(x, kws), x["ts"]))
+        return max(eligible, key=lambda x: (_kw_score(x, kws), x["ts"]))
     return items[0]
 
 
@@ -293,7 +341,7 @@ def _fetch_google_items(q: str, timeout: int):
 def fetch_news(issue_name: str, timeout: int = 8):
     """보도 1건 폴백 → {"channel","title","url","text"} 또는 None.
     1순위 네이버 뉴스 검색(최신순·1주, 키 불필요) — 원문 URL·언론사·요약이 바로 나옴.
-    후보 중 핵심어(논란/이슈/사건/의혹 제거)가 제목·요약에 든 것 우선, 없으면 최신 1건.
+    후보 중 핵심어(논란/이슈/사건/의혹 제거)가 리드·본문에 든 것 우선. 제목만 맞으면 쓰지 않는다.
     네이버 실패·0건이면 최후 폴백으로 Google 뉴스 RSS(+원문 디코드/리드 보강).
     (Daum 뉴스 검색은 비브라우저 요청을 차단해 미사용.) ISSUE_DEFS_NEWS_DISABLE=1이면 None. 예외 없음."""
     q = _news_query(issue_name)
@@ -309,10 +357,12 @@ def fetch_news(issue_name: str, timeout: int = 8):
         print(f"⚠️ [issue_defs] 네이버 뉴스 조회 실패: {_redact(e)}")
     try:
         items = _fetch_google_items(q, timeout)
-        picked = _pick_news(items, kws) if items else None
-        if picked:
-            return _as_news(_enrich(picked))
-        return None
+        if not items:
+            return None
+        ranked = sorted(items, key=lambda x: (_kw_score(x, kws), x["ts"]), reverse=True)
+        # 원문 리드를 보강한 뒤, 리드·본문 핵심어가 있는 것만 채택(제목만 매칭 거부)
+        enriched = [_enrich(x) for x in ranked[:3]]
+        return _as_news(_pick_news(enriched, kws))
     except Exception as e:
         print(f"⚠️ [issue_defs] 보도 조회 실패: {_redact(e)}")
         return None
@@ -376,15 +426,234 @@ def _drop_footer_blocks(lines):
 
 # 챕터 타임스탬프 줄: [4:10] …, 12:00 …
 _CHAPTER_RE = re.compile(r"^\s*[\[(]?\d{1,2}:\d{2}(:\d{2})?[\])]?(\s|$)")
+# 설명란 목차 줄: "7- 김어준 드디어 조밍아웃..", "1) …", "하이라이트] 1. …"
+_TOC_ITEM_RE = re.compile(
+    r"^\s*(?:[\[【(]?(?:하이라이트|highlight)[\]】):]?\s*)?"
+    r"(?:\d{1,2}\s*[-–—.)]|[\[(]\d{1,2}[\])])\s+\S",
+    re.I,
+)
+_LIVE_HIGHLIGHT_RE = re.compile(r"하이라이트|생방송|\bLIVE\b|풀하이라이트", re.I)
 # 채널 브랜드·슬로건만 있는 짧은 줄
 _SLOGAN_RE = re.compile(r"^(미디어\s*['‘\"“「].{1,20}['’\"”」]|.{0,12}더\s*나은\s*세상)\S*\s*[!.]?$")
+
+
+def _is_toc_or_title_line(line, title=None) -> bool:
+    """번호 목차 줄이거나, 영상 제목만 다시 적은 줄이면 True."""
+    s = str(line or "").strip()
+    if not s:
+        return True
+    if _TOC_ITEM_RE.match(s) or re.match(r"^하이라이트\s*[\]:】]", s):
+        return True
+    if title:
+        def norm(x):
+            x = re.sub(r"[\s\.·…\-–—\[\]【】()]+", "", str(x or "").lower())
+            return x
+        nt, ns = norm(title), norm(s)
+        if nt and ns and (ns == nt or (len(ns) >= 10 and (ns in nt or nt in ns))):
+            return True
+    return False
+
+
+def _is_live_or_highlight(video: dict) -> bool:
+    """라이브·하이라이트 묶음 영상. 자막이 없으면 근거로 쓰지 않는다."""
+    v = video or {}
+    t = str(v.get("제목") or "")
+    if _LIVE_HIGHLIGHT_RE.search(t):
+        return True
+    if v.get("라이브") or v.get("live"):
+        return True
+    if "길이" in v or "duration" in v or "duration_ms" in v:
+        dur = v.get("길이", v.get("duration", v.get("duration_ms")))
+        if dur in (0, "0", "00:00", 0.0):
+            return True
+    return False
+
+
+CLIP_WINDOW_DAYS = 7
+YT_SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
+
+
+def _clip_core_words(issue_name, aliases=None):
+    fn = globals().get("_issue_core_words") or globals().get("_core_words")
+    return fn(issue_name, aliases)
+
+
+def _strip_toc_prefix(line: str) -> str:
+    s = str(line or "").strip()
+    s = re.sub(
+        r"^\s*(?:[\[【(]?(?:하이라이트|highlight)[\]】):]?\s*)?"
+        r"(?:\d{1,2}\s*[-–—.)]|[\[(]\d{1,2}[\])])\s+",
+        "",
+        s,
+        flags=re.I,
+    )
+    return s.strip()
+
+
+def toc_chapter_titles(text) -> list:
+    """설명란에서 번호 목차 제목만 뽑는다."""
+    out = []
+    for line in str(text or "").splitlines():
+        s = line.strip()
+        if _TOC_ITEM_RE.match(s):
+            t = _strip_toc_prefix(s)
+            if t:
+                out.append(t)
+    return out
+
+
+def pick_toc_chapter(text, issue_name, aliases=None):
+    """이슈 핵심어가 들어 있는 목차 제목. 해당 줄이 없으면 None."""
+    titles = toc_chapter_titles(text)
+    cores = [c for c in _clip_core_words(issue_name, aliases) if c]
+    hits = [t for t in titles if any(c in t for c in cores)]
+    return hits[0] if hits else None
+
+
+def _norm_title(s) -> str:
+    return re.sub(r"[\s\.·…\-–—\[\]【】()|ㅣ]+", "", str(s or "").lower())
+
+
+def titles_match_chapter(chapter, title) -> bool:
+    nc, nt = _norm_title(chapter), _norm_title(title)
+    if not nc or not nt or len(nc) < 8:
+        return False
+    return nc in nt or (len(nt) >= 10 and nt in nc)
+
+
+def _parse_dt(raw, default=None):
+    if not raw:
+        return default
+    s = str(raw).strip()
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        try:
+            dt = datetime.strptime(s[:10], "%Y-%m-%d")
+        except ValueError:
+            return default
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt
+
+
+def _video_anchor(video, now=None):
+    now = now or datetime.now(KST)
+    v = video or {}
+    for k in ("게시일", "published_at", "publishedAt", "날짜", "date"):
+        dt = _parse_dt(v.get(k), None)
+        if dt:
+            return dt
+    return now
+
+
+def _rfc3339_z(dt) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=KST)
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_search_items(items) -> list:
+    out = []
+    for it in items or []:
+        if not it:
+            continue
+        if it.get("제목") or it.get("링크") or it.get("video_id"):
+            out.append(it)
+            continue
+        sn = it.get("snippet") or {}
+        vid = it.get("id") or ""
+        if isinstance(vid, dict):
+            vid = vid.get("videoId") or ""
+        if not vid:
+            continue
+        out.append({
+            "채널명": sn.get("channelTitle") or "",
+            "채널ID": sn.get("channelId") or "",
+            "제목": sn.get("title") or "",
+            "링크": f"https://www.youtube.com/watch?v={vid}",
+            "설명": sn.get("description") or "",
+            "게시일": sn.get("publishedAt") or "",
+        })
+    return out
+
+
+def _pick_clip(items, chapter_title, exclude_id=None, prefer_channel=None):
+    for it in _normalize_search_items(items):
+        if exclude_id and _video_id(it) == exclude_id:
+            continue
+        if prefer_channel and (it.get("채널명") or "") != prefer_channel:
+            continue
+        if titles_match_chapter(chapter_title, it.get("제목") or ""):
+            return it
+    return None
+
+
+def _youtube_search_clips(chapter_title, video, *, channel_only, published_after, published_before):
+    api_key = os.environ.get("YOUTUBE_API_KEY")
+    if not api_key:
+        return []
+    params = {
+        "part": "snippet",
+        "q": chapter_title,
+        "type": "video",
+        "maxResults": 8,
+        "order": "relevance",
+        "key": api_key,
+        "publishedAfter": published_after,
+        "publishedBefore": published_before,
+    }
+    if channel_only:
+        cid = (video or {}).get("채널ID") or (video or {}).get("channel_id")
+        if cid:
+            params["channelId"] = cid
+    try:
+        r = requests.get(YT_SEARCH_URL, params=params, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("items") or []
+        if channel_only and not params.get("channelId"):
+            ch = (video or {}).get("채널명") or ""
+            if ch:
+                items = [it for it in items if (it.get("snippet") or {}).get("channelTitle") == ch]
+        return items
+    except Exception as e:
+        print(f"ℹ️ [issue_defs] 본편 검색 실패: {_redact(e)}")
+        return []
+
+
+def find_source_clip(video, chapter_title, *, now=None, days=CLIP_WINDOW_DAYS, search=None):
+    """라이브/하이라이트 목차 제목으로 같은 채널→유튜브에서 ~days일 창의 본편을 찾는다."""
+    if not chapter_title:
+        return None
+    now = now or datetime.now(KST)
+    anchor = _video_anchor(video, now)
+    after, before = _rfc3339_z(anchor - timedelta(days=days)), _rfc3339_z(anchor + timedelta(days=1))
+    exclude = _video_id(video)
+    channel = (video or {}).get("채널명") or ""
+    search = search or _youtube_search_clips
+    for channel_only in (True, False):
+        try:
+            items = search(chapter_title, video, channel_only=channel_only,
+                           published_after=after, published_before=before)
+        except TypeError:
+            try:
+                items = search(chapter_title, video, channel_only)
+            except TypeError:
+                items = search(chapter_title, video)
+        prefer = channel if channel_only else None
+        hit = _pick_clip(items, chapter_title, exclude_id=exclude, prefer_channel=prefer)
+        if hit:
+            return hit
+    return None
 
 
 def _is_junk_line(line: str) -> bool:
     s = (line or "").strip()
     if s.startswith("※"):
         return True
-    if _CHAPTER_RE.match(s):
+    if _CHAPTER_RE.match(s) or _is_toc_or_title_line(s):
         return True
     if len(s) <= 30 and _SLOGAN_RE.match(s):
         return True
@@ -402,7 +671,28 @@ def _is_junk_line(line: str) -> bool:
     return False
 
 
+def _finish_sentence(sent, max_len=ONE_LINER_MAX, hard=ONE_LINER_HARD_MAX):
+    """한 문장을 한 줄로. 60자를 넘어도 문장이 끝나면 자르지 않는다(하드 한도 hard).
+    문장 중간을 '…'로 자르지 않는다. 완전한 문장을 못 만들면 None."""
+    sent = (sent or "").strip()
+    if not sent:
+        return None
+    if len(sent) <= max_len:
+        return sent
+    complete = bool(re.search(r"[.!?。]$|(?:다|요)\.?$", sent))
+    if complete and len(sent) <= hard:
+        return sent
+    window = sent[:hard]
+    last = None
+    for m in re.finditer(r".+?(?:[.!?。]|다\.|요\.)", window):
+        last = m.group(0).strip()
+    if last and len(last) >= 12:
+        return last
+    return None
+
+
 def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str = None):
+
     """근거 텍스트 → 한 문장(60자 내). 후원·광고·방송코드 줄은 건너뛴다."""
     if not text:
         return None
@@ -423,8 +713,9 @@ def summarize_one_liner(text: str, max_len: int = ONE_LINER_MAX, issue_name: str
         sent = re.split(r"(?<!\.)(?<=[.!?。])(?!\.)\s|(?<=다\.)(?!\.)", line)[0].strip()
         if _is_junk_line(sent):
             continue
-        if len(sent) > max_len:
-            sent = sent[: max_len - 1].rstrip() + "…"
+        sent = _finish_sentence(sent, max_len)
+        if not sent:
+            continue
         score = 0
         for k in keys:
             if k and k in sent:
@@ -486,6 +777,8 @@ def _is_weak_one_liner(line, issue_name=None, aliases=None) -> bool:
     """정의 한 줄로 쓰기에 부적합(잡음·광고·방송 라벨·실체 없음·이슈와 무관)이면 True."""
     s = str(line or "").strip()
     if not s:
+        return True
+    if _is_toc_or_title_line(s):
         return True
     core = re.sub(r"^\S+(\s+\S+)?\s+관련\s+", "", s) if " 관련 " in s else s
     if _is_junk_line(s) or _is_junk_line(core) or _JUNK_LINE_RE.search(s):
@@ -574,58 +867,92 @@ def _pick_standalone(videos, core_words=None):
                                         int(v.get("조회수") or 0)), reverse=True)
 
 
-def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5, aliases=None):
+
+def _news_body(n: dict) -> str:
+    """보도 본문(리드). 제목만 있는 text는 빈 문자열."""
+    if not n:
+        return ""
+    if n.get("lead"):
+        return n["lead"]
+    text, title = n.get("text") or "", n.get("title") or ""
+    if text and title and text.startswith(title) and "\n" in text:
+        return text.split("\n", 1)[-1].strip()
+    if text and text != title:
+        return text
+    return ""
+
+
+def _news_body_has_kw(n: dict, kws) -> bool:
+    if not kws:
+        return True
+    body = _news_body(n)
+    return any(k in body for k in kws if k)
+
+
+def _reject_line(line, issue_name, aliases=None, title=None) -> bool:
+    if not line:
+        return True
+    if _is_weak_one_liner(line, issue_name, aliases) or _is_toc_or_title_line(line, title):
+        return True
+    return False
+
+
+def _build_one(issue_name, videos, summarize, describe, caption, news, max_videos=5, aliases=None, search_clip=None):
     picked = _pick_standalone(videos, _issue_core_words(issue_name))[:max_videos]
+    search_clip = search_clip or find_source_clip
     for v in picked:
         # 여러 주제 묶음 LIVE에서 이슈가 한 토막뿐이면 설명·자막은 다른 주제 잡음 → 건너뜀
         if _is_omnibus_for(v.get("제목") or "", issue_name):
             continue
-        for kind, getter in (("description", describe), ("caption", caption)):
-            raw = getter(v)
-            if kind == "description" and _is_title_copy(raw, v.get("제목")):
-                print(f"ℹ️ [issue_defs] '{issue_name}' 설명란이 제목 복붙이라 건너뜀")
-                continue
+        cap = caption(v)
+        if _is_live_or_highlight(v) and not cap:
+            desc = v.get("설명") or describe(v)
+            chapter = pick_toc_chapter(desc, issue_name, aliases)
+            clip = search_clip(v, chapter) if chapter else None
+            if clip:
+                cap2 = caption(clip)
+                if cap2:
+                    try:
+                        line = summarize(cap2, issue_name=issue_name)
+                    except TypeError:
+                        line = summarize(cap2)
+                    if line and _reject_line(line, issue_name, aliases, clip.get("제목")):
+                        print(f"ℹ️ [issue_defs] '{issue_name}' 본편 자막 약한 한 줄 거부: {line[:40]}")
+                        line = None
+                    if line:
+                        return line, {"evidence_channel": clip.get("채널명") or "",
+                                      "evidence_title": clip.get("제목") or "",
+                                      "evidence_url": clip.get("링크") or "", "evidence_kind": "caption"}
+            print(f"ℹ️ [issue_defs] '{issue_name}' 라이브/하이라이트·자막 없음 → 영상 생략")
+            continue
+        pairs = (("caption", cap),) if (_is_live_or_highlight(v) and cap) else (("description", describe(v)), ("caption", cap))
+        for kind, raw in pairs:
             try:
                 line = summarize(raw, issue_name=issue_name)
             except TypeError:
                 line = summarize(raw)
-            if line and _is_title_copy(line, v.get("제목")):
-                print(f"ℹ️ [issue_defs] '{issue_name}' 설명란 한 줄이 제목 복붙이라 거부")
-                line = None
-            if line and _is_weak_one_liner(line, issue_name, aliases):
+            if line and _reject_line(line, issue_name, aliases, v.get("제목")):
                 print(f"ℹ️ [issue_defs] '{issue_name}' {kind} 약한 한 줄 거부: {line[:40]}")
                 line = None
             if line:
                 return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
                               "evidence_url": v.get("링크") or "", "evidence_kind": kind}
     n = news(issue_name)
-    if n:
-        core_words = _issue_core_words(issue_name, aliases)
-        if core_words and not any(w in str(n.get("title") or "") for w in core_words):
-            print(f"ℹ️ [issue_defs] '{issue_name}' 보도 제목에 핵심어 없음 → 거절")
-            n = None
+    if n and not _news_body_has_kw(n, _issue_core_words(issue_name, aliases) or _news_keywords(issue_name)):
+        print(f"ℹ️ [issue_defs] '{issue_name}' news 제목만 매칭 거부")
+        n = None
     if n:
         try:
             line = summarize(n.get("text") or n.get("title"), issue_name=issue_name)
         except TypeError:
             line = summarize(n.get("text") or n.get("title"))
-        if line and _is_weak_one_liner(line, issue_name, aliases):
+        if line and _reject_line(line, issue_name, aliases):
             print(f"ℹ️ [issue_defs] '{issue_name}' news 약한 한 줄 거부: {line[:40]}")
             line = None
         if line:
             return line, {"evidence_channel": n.get("channel") or "", "evidence_title": n.get("title") or "",
                           "evidence_url": n.get("url") or "", "evidence_kind": "news"}
-    # 마지막: 상위 단독 영상 제목 (제목에 이슈 핵심어·키워드가 없는 영상은 근거로 쓰지 않음)
-    core_words = _issue_core_words(issue_name, aliases)
-    for v in picked:
-        if core_words and not any(w in str(v.get("제목") or "") for w in core_words):
-            continue
-        line = _title_one_liner(v.get("제목") or "", issue_name)
-        if line and (_is_broadcast_header(line, issue_name) or _JUNK_LINE_RE.search(line)):
-            line = None
-        if line:
-            return line, {"evidence_channel": v.get("채널명") or "", "evidence_title": v.get("제목") or "",
-                          "evidence_url": v.get("링크") or "", "evidence_kind": "title"}
+    # 제목만으로는 정의를 만들지 않는다
     return None, None
 
 
@@ -659,8 +986,6 @@ def build_defs(issue_rows, videos, source="yeogwon", *, now=None, summarize=None
         al = [a for a in (aliases.get(raw) or aliases.get(name) or []) if a and a != name]
         d = {"date": out["date"], "source": source, "issue_name": name, "aliases": al[:5],
              "definition_one_liner": line, **ev, "generated_at": gen_at}
-        if row.get("match_note"):
-            d["match_note"] = row["match_note"]
         out["issues"].append(d)
     return out
 

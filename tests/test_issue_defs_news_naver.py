@@ -35,8 +35,8 @@ def test_relevance_from_lead_and_latest_fallback(monkeypatch):
         return R(HTML)
     monkeypatch.setattr(d.requests, "get", get)
     n = d.fetch_news("유시민 논란")
-    # 제목에 핵심어가 없고 리드에만 있으면 거절 (11/12 스펙)
-    assert n is None
+    assert n["url"] == "https://b.kr/news?id=2&r=1" and n["channel"] == "나일보"
+    assert n["text"].startswith('정치권 "파장"\n유시민')
     assert d.fetch_news("없는사람 의혹") is None  # 제목·리드 핵심어 없으면 엉뚱한 기사 대신 None
     assert "naver" in calls[0]  # 네이버 무관 기사뿐이면 Google 다음 후보로 넘어감
 
@@ -60,7 +60,8 @@ def test_build_one_uses_news(monkeypatch):
     monkeypatch.setattr(d.requests, "get", lambda *a, **k: R(HTML))
     defs = d.build_defs([{"이슈명": "유시민 논란"}], {"유시민 논란": []},
                         describe=lambda v: None, caption=lambda v: None)
-    assert defs["issues"] == []  # 보도 제목에 유시민 없음 → 정의 생략
+    s = str(defs)
+    assert "https://b.kr/news?id=2&r=1" in s and "news.google" not in s
 
 
 @pytest.mark.skipif(os.environ.get("ISSUE_DEFS_LIVE") != "1", reason="live")
